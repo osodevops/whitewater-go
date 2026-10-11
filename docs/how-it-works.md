@@ -82,6 +82,13 @@ Two managed wrappers sit on top of those primitives:
   store)`** — one-shot bulk read: pages `TemporaryFetch` from
   `ReaderStart` until the frontier is drained. `sink` is a
   `func([]Record) error` — `*RecordStore`'s `PutAll` fits directly.
+- **`c.LoadStore(store).FromFeed(ctx, feed, start, projection)`** — the
+  same bulk read with a per-record projection: `RecordStore` declares up
+  to 10 named secondary keys (`AddKey`), and the callback writes each
+  row via `store.Upsert(r).WithKey(k).WithNamedKey(n, v)`. Store ops:
+  `Get`/`GetString`, `GetBy`/`GetByString` (non-unique — returns a
+  slice), `Delete`, `Clear`, `Copy(target)`, `ForEach`,
+  `ForEachParallel(workers, fn)` — real goroutine parallelism.
 - **`c.Subscribe(ctx, reader, feed, start, onRecords, onError)`** — a
   durable consume loop on a background goroutine: provisions the Reader
   when missing, then `Open` → [`Fetch` → `onRecords` → `Ack`] →

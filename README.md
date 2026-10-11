@@ -80,10 +80,19 @@ func main() {
 ### Managed consume: `load` + `Subscribe`
 
 ```go
-store := whitewater.NewRecordStore("employee-store")
+store := whitewater.NewRecordStore("employee-store").
+    AddKey("passport").AddKey("department")            // up to 10 named keys
 
-// One-shot bulk read of committed history into the store.
-_, err = client.Feeds.LoadInto(ctx, "hr.employees", whitewater.StartBeginning(), store)
+// One-shot bulk read of committed history, projected per row.
+_, err = client.LoadStore(store).FromFeed(ctx, "hr.employees",
+    whitewater.StartBeginning(),
+    func(s *whitewater.RecordStore, r whitewater.Record) {
+        s.Upsert(r).WithKey(r.Key).WithNamedKey("passport", r.Metadata["pp"])
+    })
+
+rec, _ := store.GetString("emp-1")                      // by primary key
+rows := store.GetByString("passport", "P123")           // by named key — non-unique
+store.ForEachParallel(3, func(e whitewater.StoreEntry) { export(e.Record) })
 
 // ...then keep it warm: provisions the Reader, runs
 // Open -> [Fetch -> onRecords -> Ack] -> Close on a background goroutine.
@@ -91,6 +100,9 @@ sub := client.Subscribe(ctx, "hr-view", "hr.employees", whitewater.StartNow(),
     store.PutAll, func(err error) { log.Println("subscription ended:", err) })
 defer sub.Close()
 ```
+
+`client.Feeds.LoadInto`/`Load` remain the lighter one-shot reads when
+you don't need named-key projections.
 
 ### Error handling
 
