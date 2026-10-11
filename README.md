@@ -102,7 +102,8 @@ defer sub.Close()
 ```
 
 `client.Feeds.LoadInto`/`Load` remain the lighter one-shot reads when
-you don't need named-key projections.
+you don't need named-key projections. See
+[docs/stores.md](docs/stores.md) for the full store guide.
 
 ### Error handling
 

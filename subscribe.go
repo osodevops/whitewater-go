@@ -278,7 +278,7 @@ func (s *RecordStore) commitUpsert(record Record, primaryID string, named map[st
 	for key, value := range named {
 		postings, declared := s.namedIndex[key]
 		if !declared {
-			continue
+			panic("undeclared named key: " + key)
 		}
 		valueID := base64.StdEncoding.EncodeToString(value)
 		ids, ok := postings[valueID]
