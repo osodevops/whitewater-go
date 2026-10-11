@@ -76,6 +76,19 @@ Three shapes, in increasing durability:
    `Open` → `Fetch` → `Ack(deliveredCursor)` → `Close`. Progress
    survives restarts.
 
+Two managed wrappers sit on top of those primitives:
+
+- **`Feeds.Load(ctx, feed, start, sink)` / `LoadInto(ctx, feed, start,
+  store)`** — one-shot bulk read: pages `TemporaryFetch` from
+  `ReaderStart` until the frontier is drained. `sink` is a
+  `func([]Record) error` — `*RecordStore`'s `PutAll` fits directly.
+- **`c.Subscribe(ctx, reader, feed, start, onRecords, onError)`** — a
+  durable consume loop on a background goroutine: provisions the Reader
+  when missing, then `Open` → [`Fetch` → `onRecords` → `Ack`] →
+  `Close`. Transient errors retry; stale sessions and hard refusals
+  terminate via `onError`/`sub.Err()`. `sub.Close()` (or ctx cancel)
+  stops it.
+
 `c.SubscriptionMember(sub)` is the lease vocabulary for cooperating
 consumers: `Join` → `Claim`/`Renew`/`Release` → `Fetch` → `Ack`.
 

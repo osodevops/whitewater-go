@@ -77,6 +77,21 @@ func main() {
 }
 ```
 
+### Managed consume: `load` + `Subscribe`
+
+```go
+store := whitewater.NewRecordStore("employee-store")
+
+// One-shot bulk read of committed history into the store.
+_, err = client.Feeds.LoadInto(ctx, "hr.employees", whitewater.StartBeginning(), store)
+
+// ...then keep it warm: provisions the Reader, runs
+// Open -> [Fetch -> onRecords -> Ack] -> Close on a background goroutine.
+sub := client.Subscribe(ctx, "hr-view", "hr.employees", whitewater.StartNow(),
+    store.PutAll, func(err error) { log.Println("subscription ended:", err) })
+defer sub.Close()
+```
+
 ### Error handling
 
 `call` failures return `*whitewater.Error`; class helpers select policy:

@@ -7,28 +7,59 @@ import (
 	"strings"
 )
 
+// ReaderStartKind identifies a start-position flavor.
+type ReaderStartKind int
+
+const (
+	StartKindBeginning ReaderStartKind = iota
+	StartKindNow
+	StartKindCursor
+	StartKindTimestamp
+)
+
 // ReaderStart is a Reader/Subscription start position — the WCL
 // START AT operand. Build with the Start* constructors.
-type ReaderStart struct{ wcl string }
+type ReaderStart struct {
+	// Kind discriminates the start flavor.
+	Kind ReaderStartKind
+	// Cursor is set for StartKindCursor.
+	Cursor *Cursor
+	// TimestampNs is set for StartKindTimestamp.
+	TimestampNs int64
+}
 
 // WCL renders the START AT operand, e.g. BEGINNING.
-func (s ReaderStart) WCL() string { return s.wcl }
+func (s ReaderStart) WCL() string {
+	switch s.Kind {
+	case StartKindNow:
+		return "NOW"
+	case StartKindCursor:
+		if s.Cursor == nil {
+			return "CURSOR ''"
+		}
+		return "CURSOR '" + strings.ReplaceAll(string(*s.Cursor), "'", "''") + "'"
+	case StartKindTimestamp:
+		return fmt.Sprintf("TIMESTAMP %d", s.TimestampNs)
+	default:
+		return "BEGINNING"
+	}
+}
 
 // StartBeginning reads from the oldest retained record.
-func StartBeginning() ReaderStart { return ReaderStart{wcl: "BEGINNING"} }
+func StartBeginning() ReaderStart { return ReaderStart{Kind: StartKindBeginning} }
 
 // StartNow reads from records appended after creation.
-func StartNow() ReaderStart { return ReaderStart{wcl: "NOW"} }
+func StartNow() ReaderStart { return ReaderStart{Kind: StartKindNow} }
 
 // StartCursor resumes from an opaque Cursor previously returned by
 // the Riverbed.
 func StartCursor(cursor Cursor) ReaderStart {
-	return ReaderStart{wcl: "CURSOR '" + strings.ReplaceAll(string(cursor), "'", "''") + "'"}
+	return ReaderStart{Kind: StartKindCursor, Cursor: &cursor}
 }
 
 // StartTimestampNs reads from a signed Unix epoch nanosecond timestamp.
 func StartTimestampNs(nanos int64) ReaderStart {
-	return ReaderStart{wcl: fmt.Sprintf("TIMESTAMP %d", nanos)}
+	return ReaderStart{Kind: StartKindTimestamp, TimestampNs: nanos}
 }
 
 var (

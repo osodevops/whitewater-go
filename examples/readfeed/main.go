@@ -3,7 +3,11 @@
 // restarts — the "subscribe" pattern for applications, versus the
 // ephemeral tail in ../tailfeed.
 //
-// The loop is explicit — Whitewater Readers pull rather than push:
+// For a managed loop — auto-provisioning, retry policy, and a
+// Close-able handle — use client.Subscribe instead of this explicit
+// form.
+//
+// The loop below is explicit — Whitewater Readers pull rather than push:
 //
 //	Open -> [ Fetch -> process -> Ack ] -> Close
 //
