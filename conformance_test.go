@@ -175,7 +175,7 @@ func callOp(ctx context.Context, client *Client, step map[string]any) (any, erro
 	args, _ := step["args"].(map[string]any)
 	switch step["op"] {
 	case "wcl":
-		execution, err := client.Admin.WCL(ctx, str(args, "script"))
+		execution, err := client.WCL(ctx, str(args, "script"))
 		if err != nil {
 			return nil, err
 		}
@@ -188,7 +188,7 @@ func callOp(ctx context.Context, client *Client, step map[string]any) (any, erro
 				typed = append(typed, object)
 			}
 		}
-		execution, err := client.Admin.Commands(ctx, typed)
+		execution, err := client.Commands(ctx, typed)
 		if err != nil {
 			return nil, err
 		}

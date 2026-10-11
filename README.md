@@ -41,12 +41,16 @@ func main() {
         30*time.Second,
     )
 
-    // Provision a Domain, Feed, Writer, and session through WCL.
-    setup, err := client.Admin.WCL(ctx,
-        "CREATE DOMAIN shop; CREATE FEED shop.orders; "+
-            "CREATE WRITER orders-writer TO shop.orders; "+
-            "OPEN WRITER SESSION orders-writer;")
-    // setup.Results[3].Data holds {"session_epoch": N}
+    // Provision a Domain, Feed, Writer, and session — either typed
+    // (each method builds its WCL statement for you):
+    _, err := client.CreateDomain(ctx, "shop")
+    _, err = client.CreateFeed(ctx, "shop.orders")
+    _, err = client.CreateWriter(ctx, "orders-writer", "shop.orders")
+    setup, err := client.OpenWriterSession(ctx, "orders-writer")
+    // setup.Results[0].Data holds {"session_epoch": N}
+    //
+    // …or raw WCL when a script is clearer:
+    //   client.WCL(ctx, "CREATE DOMAIN shop; CREATE FEED shop.orders; ...")
 
     // Idempotent append — retrying with the same RequestID is safe.
     writer := client.Writer("orders-writer", sessionEpoch)
