@@ -27,6 +27,25 @@ func (a *AdminClient) WCLWithID(
 	if err != nil {
 		return ControlExecution{}, err
 	}
+	return a.decodeExecution(raw)
+}
+
+// Commands executes typed control commands, e.g.
+// [{"command": "show", "kind": "feeds"}].
+func (a *AdminClient) Commands(
+	ctx context.Context, commands []map[string]any,
+) (ControlExecution, error) {
+	raw, err := a.transport.post(ctx, "/v1/admin/commands", map[string]any{
+		"request_id": newUUID(),
+		"commands":   commands,
+	})
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	return a.decodeExecution(raw)
+}
+
+func (a *AdminClient) decodeExecution(raw json.RawMessage) (ControlExecution, error) {
 	body, err := decodeBody(raw)
 	if err != nil {
 		return ControlExecution{}, err

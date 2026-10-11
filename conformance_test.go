@@ -33,7 +33,6 @@ func TestSharedConformanceCorpus(t *testing.T) {
 	if apiKey == "" {
 		apiKey = "whitewater-local-development-admin-key"
 	}
-	client := NewClient(apiKey, strings.Split(baseURLs, ","), 30*time.Second)
 	files, err := filepath.Glob(filepath.Join(fixtureDir, "*.json"))
 	if err != nil || len(files) == 0 {
 		t.Fatalf("no fixtures under %s", fixtureDir)
@@ -50,6 +49,11 @@ func TestSharedConformanceCorpus(t *testing.T) {
 			if err := json.Unmarshal(raw, &scenario); err != nil {
 				t.Fatalf("parse %s: %v", file, err)
 			}
+			scenarioKey, _ := scenario["api_key"].(string)
+			if scenarioKey == "" {
+				scenarioKey = apiKey
+			}
+			client := NewClient(scenarioKey, strings.Split(baseURLs, ","), 30*time.Second)
 			runScenario(t, client, scenario)
 		})
 	}
@@ -75,22 +79,28 @@ func runScenario(t *testing.T, client *Client, scenario map[string]any) {
 		op, _ := step["op"].(string)
 		expect, _ := step["expect"].(map[string]any)
 		errorCode, _ := expect["error_code"].(string)
+		errorStatus, hasErrorStatus := expect["error_status"].(float64)
+		expectsError := errorCode != "" || hasErrorStatus
 		call := substitute(step, ctx).(map[string]any)
 
 		result, err := callOp(context.Background(), client, call)
-		if errorCode != "" {
+		if expectsError {
 			if err == nil {
-				t.Fatalf("%s: step %d (%s) succeeded, expected error_code %s",
-					name, index+1, op, errorCode)
+				t.Fatalf("%s: step %d (%s) succeeded, expected error %v",
+					name, index+1, op, expect)
 			}
 			var wwErr *Error
 			if !errors.As(err, &wwErr) {
 				t.Fatalf("%s: step %d (%s) failed without a typed error: %v",
 					name, index+1, op, err)
 			}
-			if wwErr.Code != errorCode {
+			if errorCode != "" && wwErr.Code != errorCode {
 				t.Fatalf("%s: step %d (%s) failed with %q, expected %q",
 					name, index+1, op, wwErr.Code, errorCode)
+			}
+			if hasErrorStatus && wwErr.Status != int(errorStatus) {
+				t.Fatalf("%s: step %d (%s) failed with HTTP %d, expected %d",
+					name, index+1, op, wwErr.Status, int(errorStatus))
 			}
 			result = map[string]any{"error_code": wwErr.Code}
 		} else if err != nil {
@@ -100,7 +110,7 @@ func runScenario(t *testing.T, client *Client, scenario map[string]any) {
 			ctx.bindings[bind] = result
 		}
 		for path, expectedRaw := range expect {
-			if path == "error_code" {
+			if path == "error_code" || path == "error_status" {
 				continue
 			}
 			expected := substitute(expectedRaw, ctx)
@@ -170,6 +180,57 @@ func callOp(ctx context.Context, client *Client, step map[string]any) (any, erro
 			return nil, err
 		}
 		return bindExecution(execution), nil
+	case "admin.commands":
+		commands, _ := args["commands"].([]any)
+		typed := make([]map[string]any, 0, len(commands))
+		for _, command := range commands {
+			if object, ok := command.(map[string]any); ok {
+				typed = append(typed, object)
+			}
+		}
+		execution, err := client.Admin.Commands(ctx, typed)
+		if err != nil {
+			return nil, err
+		}
+		return bindExecution(execution), nil
+	case "feed.append":
+		record := FeedAppend{
+			RequestID:       str(args, "request_id"),
+			WriterSessionID: str(args, "writer_session_id"),
+			WriterEpoch:     int64Arg(args, "writer_epoch"),
+			Sequence:        int64Arg(args, "sequence"),
+			Key:             bytesArg(args["key"]),
+			Payload:         bytesArg(args["payload"]),
+			EventTimeNs:     int64PtrArg(args["event_time_ns"]),
+			Metadata:        metadataArg(args["metadata"]),
+		}
+		result, err := client.Feeds.Append(ctx, str(args, "feed"), record)
+		if err != nil {
+			return nil, err
+		}
+		return bindAppendResult(result), nil
+	case "reader.temporary_fetch":
+		options := TemporaryFetchOptions{
+			After:            cursorPtr(str(args, "after")),
+			Limit:            int(int64Arg(args, "limit")),
+			NewOnly:          args["new_only"] == true,
+			Tail:             args["tail"] == true,
+			WaitMs:           int(int64Arg(args, "wait_ms")),
+			AfterEventTimeNs: int64PtrArg(args["after_event_time_ns"]),
+		}
+		page, err := client.Feeds.TemporaryFetch(ctx, str(args, "feed"), options)
+		if err != nil {
+			return nil, err
+		}
+		var records []any
+		for _, record := range page.Records {
+			records = append(records, bindRecord(record))
+		}
+		var nextCursor any
+		if page.NextCursor != nil {
+			nextCursor = string(*page.NextCursor)
+		}
+		return map[string]any{"records": records, "next_cursor": nextCursor}, nil
 	case "writer.append":
 		input := AppendInput{
 			RequestID:   str(args, "request_id"),

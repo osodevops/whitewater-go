@@ -6,10 +6,11 @@ import (
 	"time"
 )
 
-// Client is the entry point: one transport, four capability facades.
+// Client is the entry point: one transport, five capability facades.
 type Client struct {
 	transport *transport
 	Admin     *AdminClient
+	Feeds     *FeedClient
 }
 
 // NewClient builds a client against one or more Node endpoints.
@@ -22,6 +23,7 @@ func NewClient(apiKey string, endpoints []string, timeout time.Duration) *Client
 	return &Client{
 		transport: transport,
 		Admin:     &AdminClient{transport: transport},
+		Feeds:     &FeedClient{transport: transport},
 	}
 }
 

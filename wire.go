@@ -46,6 +46,17 @@ func decodeBody(raw json.RawMessage) (map[string]any, error) {
 	return object, nil
 }
 
+func decodeBodyList(raw json.RawMessage) ([]any, error) {
+	var list []any
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return list, nil
+}
+
 func stringField(object map[string]any, name string) string {
 	value, _ := object[name].(string)
 	return value
@@ -169,6 +180,34 @@ func decodeReaderPage(object map[string]any) ReaderPage {
 		AcknowledgedCursor:  cursorField(object, "acknowledged_cursor"),
 		RecommendedCapacity: int(intField(object, "recommended_capacity")),
 		RetryAfterMs:        int(intField(object, "retry_after_ms")),
+	}
+}
+
+func encodeFeedAppendRequest(feed string, record FeedAppend) map[string]any {
+	metadata := make(map[string]any, len(record.Metadata))
+	for name, value := range record.Metadata {
+		metadata[name] = base64.StdEncoding.EncodeToString(value)
+	}
+	body := map[string]any{
+		"request_id":        record.RequestID,
+		"feed":              feed,
+		"writer_session_id": record.WriterSessionID,
+		"writer_epoch":      record.WriterEpoch,
+		"sequence":          record.Sequence,
+		"key_base64":        base64.StdEncoding.EncodeToString(record.Key),
+		"payload_base64":    base64.StdEncoding.EncodeToString(record.Payload),
+		"metadata_base64":   metadata,
+	}
+	if record.EventTimeNs != nil {
+		body["event_time_ns"] = strconv.FormatInt(*record.EventTimeNs, 10)
+	}
+	return body
+}
+
+func decodeTemporaryFetchPage(object map[string]any) TemporaryFetchPage {
+	return TemporaryFetchPage{
+		Records:    decodeRecords(object["records"]),
+		NextCursor: cursorField(object, "next_cursor"),
 	}
 }
 

@@ -104,3 +104,38 @@ type MemberPage struct {
 	Positions      map[string]string
 	OwnershipEpoch int64
 }
+
+// FeedAppend is one ad-hoc append for POST /v1/feeds/append: the caller
+// supplies the writer identity directly instead of holding a named
+// Writer session. Identical RequestID retries dedupe server-side.
+type FeedAppend struct {
+	RequestID       string
+	WriterSessionID string
+	WriterEpoch     int64
+	Sequence        int64
+	Key             []byte
+	Payload         []byte
+	EventTimeNs     *int64
+	Metadata        map[string][]byte
+}
+
+// TemporaryFetchOptions selects an anonymous temporary Reader fetch.
+// After continues after an opaque Cursor; AfterEventTimeNs seeks by
+// record event time; NewOnly positions at the current end without
+// returning history; Tail plus WaitMs long-polls for newly committed
+// records.
+type TemporaryFetchOptions struct {
+	After            *Cursor
+	Limit            int
+	NewOnly          bool
+	Tail             bool
+	WaitMs           int
+	AfterEventTimeNs *int64
+}
+
+// TemporaryFetchPage is one anonymous fetch: records plus the
+// continuation frontier.
+type TemporaryFetchPage struct {
+	Records    []Record
+	NextCursor *Cursor
+}
