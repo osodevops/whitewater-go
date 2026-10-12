@@ -144,13 +144,52 @@ type TemporaryFetchPage struct {
 // it matches the server declaration budget.
 const MaxNamedKeys = 10
 
+// Extractor declares how a feed-sourced StateStore projects one
+// committed source record to a named key's typed lookup values — set via
+// AddKey's optional argument and applied by server-side replay. Build
+// with KeyExtractor, MetadataExtractor, or JsonExtractor; manual stores
+// leave it unset and take values on each Put instead.
+type Extractor struct {
+	kind  string
+	name  string
+	field string
+}
+
+// KeyExtractor projects the source record's application Key.
+func KeyExtractor() Extractor { return Extractor{kind: "key"} }
+
+// MetadataExtractor projects a named record Metadata entry.
+func MetadataExtractor(name string) Extractor {
+	return Extractor{kind: "metadata", name: name}
+}
+
+// JsonExtractor projects a dotted JSON-path over the record payload.
+func JsonExtractor(field string) Extractor {
+	return Extractor{kind: "projection", name: "json", field: field}
+}
+
+func (e Extractor) wire() map[string]any {
+	switch e.kind {
+	case "key":
+		return map[string]any{"kind": "key"}
+	case "metadata":
+		return map[string]any{"kind": "metadata", "name": e.name}
+	default:
+		return map[string]any{
+			"kind": "projection", "extractor": "json", "version": 1, "field": e.field,
+		}
+	}
+}
+
 // NamedKey is one declared secondary key on a StateStore. Non-unique
 // keys map a value to every primary row carrying it (the group/list
 // lookup); Unique enforces one row per value, arbitrated
-// first-committed-wins by the store's journal order.
+// first-committed-wins by the store's journal order. Extractor projects
+// values from a source-Feed record — feed-sourced stores only.
 type NamedKey struct {
-	Name   string
-	Unique bool
+	Name      string
+	Unique    bool
+	Extractor *Extractor
 }
 
 // StoreFreshness is the evidence every StateStore read reports: the

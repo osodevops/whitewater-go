@@ -119,18 +119,60 @@ func TestDefineEmitsNamedKeysAndBindsTheFacade(t *testing.T) {
 	}
 }
 
-func TestDefineRefusesNamedKeysWithAFeedSource(t *testing.T) {
+func TestDefineFeedSourcedNamedKeysNeedExtractors(t *testing.T) {
 	stub := &storeStub{}
 	server := httptest.NewServer(stub.handler())
 	defer server.Close()
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
 
+	// A feed-sourced named key without a projection is a declaration bug.
 	spec, _ := NewStateStore("accounts.s")
 	spec.AddKey("k", false)
 	if _, err := client.StateStores.Define(
 		context.Background(), spec, "accounts.events"); err == nil ||
-		!strings.Contains(err.Error(), "manual StateStore") {
-		t.Fatalf("expected manual-StateStore refusal, got %v", err)
+		!strings.Contains(err.Error(), "require an extractor") {
+		t.Fatalf("expected extractor refusal, got %v", err)
+	}
+	// An extractor on a manual store is refused — Puts carry the values.
+	manual, _ := NewStateStore("accounts.m")
+	manual.AddKey("k", false, MetadataExtractor("pp"))
+	if _, err := client.StateStores.Define(
+		context.Background(), manual, ""); err == nil ||
+		!strings.Contains(err.Error(), "manual store") {
+		t.Fatalf("expected manual-store extractor refusal, got %v", err)
+	}
+}
+
+func TestDefineFeedSourcedEmitsExtractors(t *testing.T) {
+	stub := &storeStub{routes: map[string]string{"/v1/admin/commands": commandsOK}}
+	server := httptest.NewServer(stub.handler())
+	defer server.Close()
+	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
+
+	spec, _ := NewStateStore("accounts.tagged")
+	spec.AddKey("passport", true, MetadataExtractor("pp"))
+	spec.AddKey("department", false, JsonExtractor("dept"))
+	if _, err := client.StateStores.Define(
+		context.Background(), spec, "accounts.events"); err != nil {
+		t.Fatal(err)
+	}
+	bodies := stub.bodiesFor("/v1/admin/commands")
+	if len(bodies) != 1 {
+		t.Fatalf("command calls = %d, want 1", len(bodies))
+	}
+	command := bodies[0]["commands"].([]any)[0].(map[string]any)
+	if command["source"].(map[string]any)["kind"] != "feed" {
+		t.Fatalf("source = %v, want feed", command["source"])
+	}
+	named := command["named_keys"].([]any)
+	passport := named[0].(map[string]any)["extractor"].(map[string]any)
+	if passport["kind"] != "metadata" || passport["name"] != "pp" {
+		t.Fatalf("passport extractor = %v", passport)
+	}
+	dept := named[1].(map[string]any)["extractor"].(map[string]any)
+	if dept["kind"] != "projection" || dept["extractor"] != "json" ||
+		dept["field"] != "dept" {
+		t.Fatalf("department extractor = %v", dept)
 	}
 }
 

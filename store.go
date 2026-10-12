@@ -55,9 +55,17 @@ func newStateStore(t *transport, name string) (*StateStore, error) {
 // MaxNamedKeys) and returns the spec for chaining. Non-unique keys map
 // one value to every matching primary row; unique enforces one row per
 // value.
-func (s *StateStore) AddKey(namedKey string, unique bool) *StateStore {
+// AddKey declares a named secondary key for Define (at most
+// MaxNamedKeys). Non-unique keys map one value to every primary row
+// carrying it; unique enforces one row per value. An optional Extractor
+// declares how replay projects each source-Feed record to this key's
+// values — required on feed-sourced stores, refused on manual ones.
+func (s *StateStore) AddKey(namedKey string, unique bool, extractors ...Extractor) *StateStore {
 	if strings.TrimSpace(namedKey) == "" {
 		panic("named key is required")
+	}
+	if len(extractors) > 1 {
+		panic("a named key declares at most one extractor")
 	}
 	for _, key := range s.namedKeys {
 		if key.Name == namedKey {
@@ -67,7 +75,12 @@ func (s *StateStore) AddKey(namedKey string, unique bool) *StateStore {
 	if len(s.namedKeys) >= MaxNamedKeys {
 		panic(fmt.Sprintf("a StateStore declares at most %d named keys", MaxNamedKeys))
 	}
-	s.namedKeys = append(s.namedKeys, NamedKey{Name: namedKey, Unique: unique})
+	key := NamedKey{Name: namedKey, Unique: unique}
+	if len(extractors) == 1 {
+		extractor := extractors[0]
+		key.Extractor = &extractor
+	}
+	s.namedKeys = append(s.namedKeys, key)
 	return s
 }
 
@@ -366,10 +379,17 @@ func (c *StateStoresClient) Define(
 	if spec == nil {
 		return nil, fmt.Errorf("define takes a StateStore spec — use NewStateStore(name)")
 	}
-	if len(spec.namedKeys) > 0 && source != "" {
-		return nil, fmt.Errorf(
-			"named keys require a manual StateStore until a declared " +
-				"source-Feed projection exists")
+	for _, key := range spec.namedKeys {
+		if source == "" && key.Extractor != nil {
+			return nil, fmt.Errorf(
+				"named-key extractors apply to feed-sourced StateStores; " +
+					"manual stores take named values on each Put")
+		}
+		if source != "" && key.Extractor == nil {
+			return nil, fmt.Errorf(
+				"feed-sourced named keys require an extractor " +
+					"(KeyExtractor/MetadataExtractor/JsonExtractor)")
+		}
 	}
 	var sourceBody map[string]any
 	if source != "" {
@@ -383,7 +403,11 @@ func (c *StateStoresClient) Define(
 	}
 	named := make([]map[string]any, 0, len(spec.namedKeys))
 	for _, key := range spec.namedKeys {
-		named = append(named, map[string]any{"name": key.Name, "unique": key.Unique})
+		entry := map[string]any{"name": key.Name, "unique": key.Unique}
+		if key.Extractor != nil {
+			entry["extractor"] = key.Extractor.wire()
+		}
+		named = append(named, entry)
 	}
 	_, err := c.transport.post(ctx, "/v1/admin/commands", map[string]any{
 		"commands": []map[string]any{{

@@ -86,18 +86,39 @@ _, err = client.StateStores.Drop(ctx, name)   // or store.Drop(ctx)
   every data path refuses. Rows already applied on replicas remain
   until a bounded reclaim pass.
 - Feed-sourced stores: `client.StateStores.Define(ctx, spec,
-  "accounts.events")` materializes committed Feed history; named keys
-  require a manual store until declared projections exist.
+  "accounts.events")` materializes committed Feed history.
+
+### Feed-sourced named keys
+
+Named keys on a feed-sourced store declare a projection — how each
+committed source record maps to typed lookup values. Every key carries
+an `Extractor`:
+
+```go
+spec, _ := whitewater.NewStateStore("accounts.tagged")
+spec.AddKey("passport", true, whitewater.MetadataExtractor("pp"))
+spec.AddKey("department", false, whitewater.JsonExtractor("dept"))
+store, err := client.StateStores.Define(ctx, spec, "accounts.events")
+```
+
+`whitewater.KeyExtractor()` reads the record's key,
+`MetadataExtractor("pp")` a Metadata entry, `JsonExtractor("dept")` a
+dotted JSON-path over the payload. Missing fields and unparseable
+payloads project a `Null` posting rather than stalling replay. Manual
+stores omit the extractor — `Put` carries the values per row.
 
 ### WCL and typed commands
 
 Everything above is a convenience over the Control Plane's two doors.
-WCL spells `DROP` for stores (there is no `DEFINE`/`MUTATE` spelling —
-declaration and data ops stay typed):
+WCL spells `DEFINE`, `DROP`, `DESCRIBE`, and `SHOW` for stores (data ops
+stay typed):
 
 ```go
-c.WCL(ctx, "DROP STATESTORE accounts.employees")
+c.WCL(ctx, "DEFINE STATESTORE accounts.employees KEYS department, passport UNIQUE")
+c.WCL(ctx, "DEFINE STATESTORE accounts.tagged FROM FEED accounts.events KEYS passport = METADATA 'pp' UNIQUE, department = JSON 'dept'")
+c.WCL(ctx, "SHOW STATESTORES")
 c.WCL(ctx, "DESCRIBE STATESTORE accounts.employees") // stage incl. "dropped"
+c.WCL(ctx, "DROP STATESTORE accounts.employees")
 ```
 
 `Commands` posts the typed command the facade builds for you:
@@ -122,7 +143,8 @@ c.Commands(ctx, []map[string]any{{
 | Where | Type | Meaning / remedy |
 |---|---|---|
 | `AddKey` #11 / duplicate / blank | `panic` | Declaration contract (10-key bound, distinct names). |
-| `Define` spec + `source` + named keys | `error` | Named keys need a manual store — checked before the call. |
+| `Define` spec + `source` + bare named keys | `error` | Feed-sourced keys need an `Extractor` — checked before the call. |
+| `Define` manual spec + `Extractor` | `error` | Extractors apply to feed-sourced stores only. |
 | Data op on unbound spec | `error` | `NewStateStore` builds a spec; bind via `Define` or `client.StateStore(name)`. |
 | Undeclared named key / missing store | `*Error` 400 | Server-side contract — fix the declaration. |
 | `mutationID` reused differently | `*Error` 409 | Retry with the original contents or a fresh ID. |
