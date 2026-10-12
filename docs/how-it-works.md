@@ -62,6 +62,56 @@ Every management call returns `ControlExecution` — `RequestID`,
 `Revision`, `Authority`, `Warning`, and one `StatementResult` per WCL
 statement.
 
+### WCL by example
+
+Raw script — several statements commit as one request (`WCLWithID`
+supplies the deduplicating `request_id` explicitly):
+
+```go
+exec, err := c.WCL(ctx, `
+    CREATE DOMAIN shop;
+    CREATE FEED shop.orders;
+    CREATE WRITER orders-writer TO shop.orders;
+    OPEN WRITER SESSION orders-writer;
+    CREATE READER audit FROM shop.orders START AT BEGINNING;
+    SHOW FEEDS;
+`)
+```
+
+The same calls through the typed builders — each serializes one WCL
+statement and calls `WCL` internally:
+
+```go
+c.CreateDomain(ctx, "shop")                        // CREATE DOMAIN shop;
+c.CreateFeed(ctx, "shop.orders")                   // CREATE FEED shop.orders;
+c.CreateWriter(ctx, "orders-writer", "shop.orders")
+c.OpenWriterSession(ctx, "orders-writer")          // epoch comes back in .Data
+c.CreateReader(ctx, "audit", "shop.orders", whitewater.StartBeginning())
+c.ListFeeds(ctx)                                   // SHOW FEEDS;
+c.SeekReader(ctx, "audit", whitewater.StartNow())  // SEEK READER ... TO NOW;
+c.DropFeed(ctx, "shop.orders")                     // DROP FEED shop.orders;
+```
+
+`c.Commands` is the second door — the typed JSON command path for what
+WCL does not spell. Declaring a StateStore with named keys is the
+current example (there is no `DEFINE STATESTORE` WCL statement yet):
+
+```go
+c.Commands(ctx, []map[string]any{{
+    "command": "define_state_store",
+    "name":    "accounts.employees",
+    "source":  map[string]any{"kind": "manual"},
+    "named_keys": []map[string]any{
+        {"name": "passport", "unique": true},
+        {"name": "department", "unique": false},
+    }},
+})
+```
+
+(`c.StateStores.Define(ctx, spec, "")` posts exactly this body for
+you.) `DROP` is spelled in WCL for every resource including stores:
+`c.WCL(ctx, "DROP STATESTORE accounts.employees")` ≡ `store.Drop(ctx)`.
+
 ## Reading
 
 Three shapes, in increasing durability:

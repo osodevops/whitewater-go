@@ -89,6 +89,27 @@ _, err = client.StateStores.Drop(ctx, name)   // or store.Drop(ctx)
   "accounts.events")` materializes committed Feed history; named keys
   require a manual store until declared projections exist.
 
+### WCL and typed commands
+
+Everything above is a convenience over the Control Plane's two doors.
+WCL spells `DROP` for stores (there is no `DEFINE`/`MUTATE` spelling —
+declaration and data ops stay typed):
+
+```go
+c.WCL(ctx, "DROP STATESTORE accounts.employees")
+c.WCL(ctx, "DESCRIBE STATESTORE accounts.employees") // stage incl. "dropped"
+```
+
+`Commands` posts the typed command the facade builds for you:
+
+```go
+c.Commands(ctx, []map[string]any{{
+    "command": "define_state_store", "name": "accounts.employees",
+    "source": map[string]any{"kind": "manual"},
+    "named_keys": []map[string]any{{"name": "passport", "unique": true}},
+}})
+```
+
 ## What a StateStore facade is **not**
 
 - **Not a local store** — there is no in-process copy to drift from
