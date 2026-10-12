@@ -1,156 +1,109 @@
-# RecordStore and LoadStore — coding guide
+# StateStore — coding guide
 
-A `RecordStore` is a named, thread-safe, in-memory projection of Feed
-records. Fill it once with `Client.LoadStore(store).FromFeed` (bulk
-history) and keep it warm with `Client.Subscribe` (live tail) — the
-Whitewater equivalent of a local materialized view.
-
-## Store anatomy
-
-Two structures per store:
-
-- **Primary map** — `primary key -> Record`. One row per key; a new row
-  for an existing key replaces it.
-- **Named-key posting maps** — one per declared named key, conceptually
-  `employee-store.passport`: `named value -> set of primary keys`.
-  Named keys are **not unique** — many rows may share one named value,
-  so lookups return a slice.
+There is exactly one store: the **node-side StateStore** — durable,
+RF3-replicated, Fjall-backed, and queryable from any Node. The SDK's
+`StateStore` is a thin facade over it: it holds no rows, keeps no local
+projection, and every operation is an HTTP call with freshness evidence.
 
 ```go
-store := whitewater.NewRecordStore("employee-store").
-    AddKey("passport").        // declare before use
-    AddKey("department")       // at most whitewater.MaxNamedKeys (10)
+spec, _ := whitewater.NewStateStore("accounts.employees")
+spec.AddKey("passport", true).            // unique: one row per value
+      AddKey("department", false)         // non-unique: value -> many rows
+
+store, err := client.StateStores.Define(ctx, spec, "")
+//                                       source "" = manual store
 ```
 
-`AddKey` returns the store for chaining. An eleventh key **panics**
-("a RecordStore supports at most 10 named keys") — treat the budget as a
-construction-time contract; an empty name also panics.
+`AddKey` records declaration intent used by `Define` — named keys are
+declared at creation; at most `whitewater.MaxNamedKeys` (10). Adding a
+key to an existing store has no effect server-side.
 
-## Loading history: `client.LoadStore(store).FromFeed(...)`
+## Writing
 
 ```go
-loaded, err := client.LoadStore(store).FromFeed(ctx,
-    "hr.employees",
-    whitewater.StartBeginning(),       // or StartNow(), StartCursor(c), StartTimestampNs(ns)
-    func(s *whitewater.RecordStore, r whitewater.Record) {
-        s.Upsert(r).
-            WithKey(r.Key).            // primary key
-            WithNamedKey("passport", r.Metadata["pp"]).
-            WithNamedKey("department", []byte("eng"))
-    })
+_, err = store.Put(ctx, []byte("user-1"), []byte("profile-1"),
+    map[string]any{"passport": "P111", "department": "eng", "score": 42},
+    "")                                    // "" auto-generates mutation_id
+_, err = store.Delete(ctx, []byte("user-1"), "stable-mutation-uuid")
 ```
 
-Semantics, in order:
+- `Put` commits one journaled `put_row` through the store's RF3 quorum.
+- Named values are **typed**: `string` -> text, signed/unsigned ints ->
+  i64, `bool` -> bool, `[]byte` -> bytes, `nil` -> null. A `[]any`
+  value carries one typed value per posting component. Floats are
+  refused — the wire carries exact i64/text/bytes.
+- Named values must match the store's declared keys — the server
+  refuses undeclared names. `unique` claims arbitrate
+  first-committed-wins by journal order.
+- `mutationID` is the idempotency identity: retry a timed-out Put with
+  the same ID and it dedupes; reuse it with different contents and it
+  conflicts.
 
-1. Pages `TemporaryFetch` from `start` until the frontier is drained —
-   a **one-shot bounded read**, not a tail. `ctx` cancels mid-read.
-2. For every record the projection runs `store.Upsert(r)`.
-3. `WithKey([]byte)` chooses the primary key. Defaults to `r.Key`;
-   pass anything — a composite `"dept:emp-1"` — and the row re-keys
-   (old postings are stripped first).
-4. `WithNamedKey(name, []byte)` attaches one named-key value; call it
-   once per declared key you want indexed. An **undeclared** named key
-   **panics** (`"undeclared named key: ..."`) — a projection bug fails
-   the load immediately, never silently writes an unindexed row.
-5. Returns `(count, error)` — count of records read, not rows written;
-   re-keys replace, they don't duplicate.
-
-Skip `WithNamedKey` and the row lands in the primary map only — fully
-readable, just not indexable by that named key.
-
-`Feeds.Load(ctx, feed, start, sink)` / `Feeds.LoadInto(ctx, feed,
-start, store)` remain the lighter "dump history" paths — `sink` is a
-`func([]Record) error`, and `store.PutAll` fits it directly.
-
-## Keeping the store warm: `Subscribe`
+## Reading
 
 ```go
-sub := client.Subscribe(ctx, "hr-view", "hr.employees",
-    whitewater.StartNow(),                          // only new records
-    func(records []whitewater.Record) error {       // per fetched page
-        for _, r := range records {
-            s := store.Upsert(r).WithKey(r.Key)
-            s.WithNamedKey("department", r.Metadata["department"])
-        }
-        return nil                                  // error -> no ack, page replays
-    },
-    func(err error) { log.Println("subscription ended:", err) })
-defer sub.Close()                                   // stops the loop + releases the session
-// sub.Err() reports the terminal error after Done() closes.
+row, err := store.Get(ctx, []byte("user-1"), false, 0)   // *StoreRow | nil
+row.Payload                        // []byte
+row.Freshness                      // AppliedSeq / CommittedSeq / Behind / ServedBy
+
+rows, err := store.GetBy(ctx, "department", "eng", 0, false, 0)
+rows.Rows                          // []StoreRow — every match
+rows.Freshness.ServedBy            // which Node answered
 ```
 
-Delivery is **at-least-once**: records land in `onRecords`, then the
-loop acks `deliveredCursor`. Return a non-nil error from `onRecords` and
-the page is **not** acked — it replays on the next fetch. A crash
-between callback and ack also replays — make the projection idempotent
-(upsert semantics already are).
+`GetBy` is the group/list lookup: one non-unique named value resolves
+to **every** primary row carrying it. `strict` + `waitMs` bounded-waits
+for the serving replica to apply its committed frontier rather than
+answering stale; non-strict reads still report `Freshness.Behind`
+honestly.
 
-## Reading the store
-
-```go
-rec, ok := store.Get([]byte("emp-1"))         // (Record, bool) by primary key
-rec, ok  = store.GetString("emp-1")           // UTF-8 convenience
-rows := store.GetBy("department", b)          // []Record — every match, non-unique
-rows  = store.GetByString("department", "eng")
-store.GetBy("undeclared", v)                  // nil — GetBy is a query, not a write;
-                                              // use NamedKeys() to guard projections
-store.Len()                                   // row count
-store.NamedKeys()                             // declared keys, in order
-store.Name()                                  // "employee-store"
-store.Entries()                               // []StoreEntry — {PrimaryKey, Record}
-store.ForEach(func(e whitewater.StoreEntry) { export(e.Record) })
-```
-
-## Mutating outside a load
+## Iterating
 
 ```go
-store.Put(record)                    // primary-key upsert, no named keys
-store.PutAll(records)                // subscribe-ready sink shape (error for fit)
-store.Upsert(record).WithKey(k)      // same builder as projections
-store.Delete([]byte("emp-1"))        // removes row + all its postings
-store.Clear()                        // empties everything
-```
-
-`Delete` and `Clear` strip named-key postings too — a deleted row never
-lingers in a `GetBy` result.
-
-## Copying and parallel work
-
-```go
-replica := whitewater.NewRecordStore("employee-backup")
-store.Copy(replica)                  // rows + named postings; declares
-                                     // missing keys on the target
-store.ForEachParallel(3, func(e whitewater.StoreEntry) {
-    rebuild(e)                       // runs on one of 3 goroutines
+err = store.Iterate(ctx, 256, func(row StoreRow) error {
+    export(row)
+    return nil
 })
+page, err := store.Page(ctx, afterKey, 256)   // one bounded page
+page.NextKey                                   // continuation
+page.PinnedSeq                                 // journal position pinned to
 ```
 
-`ForEachParallel` is **real parallelism** — a `jobs` channel feeds
-`workers` goroutines (capped at the row count), joined before return.
-`workers < 1` panics. The callback runs concurrently on multiple
-goroutines: keep it free of un-synchronized shared state (the store
-itself is already locked internally).
+`Iterate` pages `/v1/state-stores/iterate` — the same bounded, ordered
+row set replica catch-up serves — so `PinnedSeq` is the iteration's
+freshness evidence.
 
-## Error handling reference
+## Lifecycle
 
-| Where | Shape | Meaning / remedy |
+```go
+_, err = store.Clear(ctx, "")                 // one journaled ClearAll
+_, err = client.StateStores.Drop(ctx, name)   // or store.Drop(ctx)
+```
+
+- `Clear` empties the store as one durable, idempotent mutation;
+  replicas sweep rows and postings in bounded batches.
+- `Drop` tombstones the definition — the name cannot be recreated and
+  every data path refuses. Rows already applied on replicas remain
+  until a bounded reclaim pass.
+- Feed-sourced stores: `client.StateStores.Define(ctx, spec,
+  "accounts.events")` materializes committed Feed history; named keys
+  require a manual store until declared projections exist.
+
+## What a StateStore facade is **not**
+
+- **Not a local store** — there is no in-process copy to drift from
+  the Nodes. Every read goes to a replica; freshness evidence tells
+  you how current it was.
+- **Not unique on non-unique keys** — `GetBy` always returns a list.
+
+## Errors
+
+| Where | Type | Meaning / remedy |
 |---|---|---|
-| `AddKey` #11 / empty name | panic | Construction-time contract — declare ≤10 keys at build. |
-| `WithNamedKey` undeclared | panic | Programmer error — declare the key before projecting it. |
-| `GetBy` undeclared key | `nil` | Check `NamedKeys()`; declare keys up front. |
-| `FromFeed` mid-read | `error` (usually `*Error` kind `Unavailable`) | Transport refused a page; retry the whole call — re-upserts are idempotent. |
-| `Subscribe` transient | retried internally | `KindUnavailable`/`KindAmbiguous` backoff inside the loop. |
-| `Subscribe` terminal | `onError` + `sub.Err()` | `IsStaleSession(err)` (another client opened your Reader — pick a unique name or take over deliberately), `IsRefused`, `IsConflict`. The loop is dead; inspect, fix, re-subscribe. |
-
-Classify errors with `whitewater.IsStaleSession(err)`,
-`IsUnavailable(err)`, `IsAmbiguous(err)`, `IsLeaseConflict(err)`, and
-`err.(*whitewater.Error)` for `Status`/`Code`.
-
-## What a RecordStore is **not**
-
-- **Not durable** — it dies with the process. Rebuild is cheap:
-  `FromFeed` from `StartBeginning()` (or a snapshot Cursor).
-- **Not a server StateStore** — the server-side replicated store model
-  is a separate, later seam. This is the client-side projection.
-- **Not unique on named keys** — `GetBy` always returns a slice, even
-  when it happens to hold one row.
+| `AddKey` #11 / duplicate / blank | `panic` | Declaration contract (10-key bound, distinct names). |
+| `Define` spec + `source` + named keys | `error` | Named keys need a manual store — checked before the call. |
+| Data op on unbound spec | `error` | `NewStateStore` builds a spec; bind via `Define` or `client.StateStore(name)`. |
+| Undeclared named key / missing store | `*Error` 400 | Server-side contract — fix the declaration. |
+| `mutationID` reused differently | `*Error` 409 | Retry with the original contents or a fresh ID. |
+| No quorum / replica down | `*Error` 503 | Retry — the journal needs a quorum to commit. |
+| `strict` read can't catch up | `*Error` 409 `index_behind` | Bounded wait expired; retry or drop `strict`. |

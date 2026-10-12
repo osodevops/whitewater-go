@@ -136,14 +136,18 @@ func TestLoadPagesUntilEmptyAndFillsTheStore(t *testing.T) {
 	defer server.Close()
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
 
-	store := NewRecordStore("employee-store")
-	loaded, err := client.Feeds.LoadInto(
-		context.Background(), "hr.employees", StartBeginning(), store)
+	var received []Record
+	loaded, err := client.Feeds.Load(
+		context.Background(), "hr.employees", StartBeginning(),
+		func(records []Record) error {
+			received = append(received, records...)
+			return nil
+		})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded != 2 || store.Len() != 2 {
-		t.Fatalf("loaded=%d size=%d, want 2/2", loaded, store.Len())
+	if loaded != 2 || len(received) != 2 {
+		t.Fatalf("loaded=%d received=%d, want 2/2", loaded, len(received))
 	}
 	bodies := stub.temporaryBodies()
 	if len(bodies) != 3 {
@@ -236,76 +240,4 @@ func TestSubscribeOpensDeliversAcksAndCloses(t *testing.T) {
 func mustRecord(cursor string) string {
 	out, _ := json.Marshal(recordJSON(cursor, "azE="))
 	return string(out)
-}
-
-func TestLoadStoreProjectsRowsThroughUpsert(t *testing.T) {
-	stub := &subscribeStub{
-		temporaryPages: []string{
-			temporaryPage("c2", [2]string{"r1", "azE="}, [2]string{"r2", "azI="}),
-		},
-	}
-	server := httptest.NewServer(stub.handler())
-	defer server.Close()
-	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
-
-	store := NewRecordStore("employee-store").AddKey("department")
-	loaded, err := client.LoadStore(store).FromFeed(
-		context.Background(), "hr.employees", StartBeginning(),
-		func(s *RecordStore, r Record) {
-			s.Upsert(r).WithKey(r.Key).WithNamedKey("department", []byte("eng"))
-		})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded != 2 {
-		t.Fatalf("loaded=%d, want 2", loaded)
-	}
-	if got := store.GetByString("department", "eng"); len(got) != 2 {
-		t.Fatalf("department postings = %d, want 2 (non-unique)", len(got))
-	}
-	if _, ok := store.GetString("k1"); !ok {
-		t.Fatal("primary get on UTF-8 key misses")
-	}
-	if got := store.GetBy("undeclared", []byte("x")); got != nil {
-		t.Fatal("undeclared named key must return nil")
-	}
-}
-
-func TestStoreDeleteClearCopyAndParallel(t *testing.T) {
-	store := NewRecordStore("src").AddKey("team")
-	r1 := Record{Cursor: "r1", Key: []byte("a")}
-	r2 := Record{Cursor: "r2", Key: []byte("b")}
-	store.Upsert(r1).WithKey(r1.Key).WithNamedKey("team", []byte("t1"))
-	store.Upsert(r2).WithKey(r2.Key).WithNamedKey("team", []byte("t2"))
-
-	target := NewRecordStore("dst")
-	store.Copy(target)
-	if target.Len() != 2 || len(target.GetByString("team", "t1")) != 1 {
-		t.Fatal("copy must carry rows and named postings")
-	}
-	if keys := target.NamedKeys(); len(keys) != 1 || keys[0] != "team" {
-		t.Fatalf("target declared keys = %v", keys)
-	}
-
-	seen := make(chan struct{}, 2)
-	store.ForEachParallel(3, func(entry StoreEntry) {
-		if len(entry.PrimaryKey) == 0 || entry.Record.Cursor == "" {
-			t.Error("entry missing key/record")
-		}
-		seen <- struct{}{}
-	})
-	if <-seen; <-seen != struct{}{} {
-		t.Fatal("unreachable")
-	}
-
-	if !store.Delete([]byte("a")) {
-		t.Fatal("delete(a) should hit")
-	}
-	if len(store.GetByString("team", "t1")) != 0 {
-		t.Fatal("delete must strip named postings")
-	}
-	store.Clear()
-	if store.Len() != 0 {
-		t.Fatal("clear must empty the store")
-	}
 }

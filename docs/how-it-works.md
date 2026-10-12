@@ -78,17 +78,18 @@ Three shapes, in increasing durability:
 
 Two managed wrappers sit on top of those primitives:
 
-- **`Feeds.Load(ctx, feed, start, sink)` / `LoadInto(ctx, feed, start,
-  store)`** — one-shot bulk read: pages `TemporaryFetch` from
-  `ReaderStart` until the frontier is drained. `sink` is a
-  `func([]Record) error` — `*RecordStore`'s `PutAll` fits directly.
-- **`c.LoadStore(store).FromFeed(ctx, feed, start, projection)`** — the
-  same bulk read with a per-record projection: `RecordStore` declares up
-  to 10 named secondary keys (`AddKey`), and the callback writes each
-  row via `store.Upsert(r).WithKey(k).WithNamedKey(n, v)`. Store ops:
-  `Get`/`GetString`, `GetBy`/`GetByString` (non-unique — returns a
-  slice), `Delete`, `Clear`, `Copy(target)`, `ForEach`,
-  `ForEachParallel(workers, fn)` — real goroutine parallelism.
+- **`Feeds.Load(ctx, feed, start, sink)`** — one-shot bulk read:
+  pages `TemporaryFetch` from `ReaderStart` until the frontier is
+  drained; `sink` is any `func([]Record) error`.
+- **`c.StateStore(name)` / `NewStateStore(name)`** — the thin facade
+  over the node-side StateStore (durable, RF3, Fjall): declare with
+  `client.StateStores.Define(ctx, spec, source)` after
+  `AddKey(name, unique)` (up to 10 named secondary keys), then
+  `Put(key, payload, named, mutationID)` with typed values,
+  `Get(key, strict, waitMs)`, `GetBy(namedKey, value, ...)` (non-unique
+  — `StoreRows`), `Delete`, `Iterate`/`Page`, `Clear`, `Drop`. The
+  facade holds no rows; reads carry freshness evidence (`AppliedSeq`/
+  `CommittedSeq`/`Behind`/`ServedBy`).
 - **`c.Subscribe(ctx, reader, feed, start, onRecords, onError)`** — a
   durable consume loop on a background goroutine: provisions the Reader
   when missing, then `Open` → [`Fetch` → `onRecords` → `Ack`] →

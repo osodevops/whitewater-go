@@ -139,3 +139,62 @@ type TemporaryFetchPage struct {
 	Records    []Record
 	NextCursor *Cursor
 }
+
+// MaxNamedKeys bounds the named secondary keys one StateStore declares;
+// it matches the server declaration budget.
+const MaxNamedKeys = 10
+
+// NamedKey is one declared secondary key on a StateStore. Non-unique
+// keys map a value to every primary row carrying it (the group/list
+// lookup); Unique enforces one row per value, arbitrated
+// first-committed-wins by the store's journal order.
+type NamedKey struct {
+	Name   string
+	Unique bool
+}
+
+// StoreFreshness is the evidence every StateStore read reports: the
+// serving replica's applied and committed journal positions, whether it
+// still lags, and which Node served the response.
+type StoreFreshness struct {
+	AppliedSeq   int64
+	CommittedSeq int64
+	Behind       bool
+	ServedBy     string
+}
+
+// StoreRow is one StateStore row: its primary key and payload plus the
+// journal cursor it last applied at. Freshness carries the serving
+// replica's evidence when the row came from a read.
+type StoreRow struct {
+	Key           []byte
+	Payload       []byte
+	AppliedCursor *string
+	Freshness     *StoreFreshness
+}
+
+// StoreRows is a named-key lookup result: every primary row the value
+// points at plus the serving replica's freshness evidence.
+type StoreRows struct {
+	Rows      []StoreRow
+	Freshness StoreFreshness
+}
+
+// StorePage is one bounded iteration page in primary-key order.
+// NextKey continues the scan; PinnedSeq is the serving replica's
+// applied journal position the page was pinned to.
+type StorePage struct {
+	Rows      []StoreRow
+	NextKey   []byte
+	PinnedSeq int64
+	ServedBy  string
+}
+
+// MutationResult is a committed StateStore mutation: the journal
+// sequence it landed at and whether MutationID deduplicated a retry.
+type MutationResult struct {
+	StoreID      string
+	MutationID   string
+	Sequence     int64
+	Deduplicated bool
+}

@@ -9,14 +9,15 @@ import (
 	"time"
 )
 
-// Live store smoke against a running Riverbed — create Domain + Feed,
-// append keyed records with metadata, then LoadStore a projected
-// history read and named-key lookups.
+// Live StateStore smoke against a running Riverbed — create a Domain,
+// declare a named-key StateStore, then Put/Get/GetBy/Iterate/Clear/Drop
+// through the facade against the node-side store.
 //
-// Runs only when WHITEWATER_ENDPOINTS is set (comma-separated), e.g.
+// Runs only when WHITEWATER_ENDPOINTS is set (comma- or
+// semicolon-separated), e.g.
 // http://localhost:7371,http://localhost:7372,http://localhost:7373;
 // WHITEWATER_API_KEY defaults to the documented development key.
-func TestLiveStoreCreateWriteLoadAndQuery(t *testing.T) {
+func TestLiveNamedKeyStoreLifecycle(t *testing.T) {
 	endpoints := os.Getenv("WHITEWATER_ENDPOINTS")
 	if endpoints == "" {
 		t.Skip("WHITEWATER_ENDPOINTS unset")
@@ -25,11 +26,21 @@ func TestLiveStoreCreateWriteLoadAndQuery(t *testing.T) {
 	if apiKey == "" {
 		apiKey = "whitewater-local-development-admin-key"
 	}
-	client := NewClient(apiKey, strings.Split(endpoints, ","), 10*time.Second)
+	parts := strings.FieldsFunc(endpoints, func(r rune) bool {
+		return r == ',' || r == ';'
+	})
+	for i, p := range parts {
+		p = strings.TrimSpace(p)
+		if !strings.Contains(p, "://") {
+			p = "http://" + p
+		}
+		parts[i] = p
+	}
+	client := NewClient(apiKey, parts, 10*time.Second)
 	ctx := context.Background()
 
 	domain := fmt.Sprintf("smoke.go%x", time.Now().UnixNano()&0x7fffffff)
-	feed := domain + ".events"
+	name := domain + ".employees"
 	ok, err := client.Healthy(ctx)
 	if err != nil || !ok {
 		t.Fatalf("healthy = %v, %v", ok, err)
@@ -37,70 +48,79 @@ func TestLiveStoreCreateWriteLoadAndQuery(t *testing.T) {
 	if _, err := client.CreateDomain(ctx, domain); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.CreateFeed(ctx, feed); err != nil {
-		t.Fatal(err)
-	}
 
-	session := fmt.Sprintf("00000000-0000-7000-8000-%012x", time.Now().UnixNano()&0xffffffffffff)
-	rows := [][3]string{
-		{"emp-1", "alice", "eng"},
-		{"emp-2", "bob", "eng"},
-		{"emp-3", "cara", "ops"},
-	}
-	base := time.Now().UnixNano() & 0xffffffffffff
-	for i, row := range rows {
-		_, err := client.Feeds.Append(ctx, feed, FeedAppend{
-			RequestID:       fmt.Sprintf("00000000-0000-7000-8000-%012x", base+int64(i)+1),
-			WriterSessionID: session,
-			WriterEpoch:     1,
-			Sequence:        int64(i + 1),
-			Key:             []byte(row[0]),
-			Payload:         []byte(row[1]),
-			Metadata:        map[string][]byte{"department": []byte(row[2])},
-		})
-		if err != nil {
-			t.Fatalf("append %d: %v", i, err)
-		}
-	}
-
-	store := NewRecordStore("employee-store").AddKey("department")
-	loaded, err := client.LoadStore(store).FromFeed(
-		ctx, feed, StartBeginning(),
-		func(s *RecordStore, r Record) {
-			s.Upsert(r).WithKey(r.Key).WithNamedKey("department", r.Metadata["department"])
-		})
+	spec, err := NewStateStore(name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded != 3 || store.Len() != 3 {
-		t.Fatalf("loaded=%d size=%d, want 3/3", loaded, store.Len())
-	}
-	if rec, ok := store.GetString("emp-1"); !ok || string(rec.Payload) != "alice" {
-		t.Fatalf("primary get: %v %v", rec.Payload, ok)
-	}
-	if got := store.GetByString("department", "eng"); len(got) != 2 {
-		t.Fatalf("eng postings = %d, want 2", len(got))
-	}
-	if got := store.GetByString("department", "ops"); len(got) != 1 {
-		t.Fatalf("ops postings = %d, want 1", len(got))
+	spec.AddKey("passport", true).AddKey("department", false)
+	store, err := client.StateStores.Define(ctx, spec, "")
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	copy := NewRecordStore("employee-copy")
-	store.Copy(copy)
-	if len(copy.GetByString("department", "eng")) != 2 {
-		t.Fatal("copy must carry named postings")
+	if _, err := store.Put(ctx, []byte("user-1"), []byte("profile-1"),
+		map[string]any{"passport": "P111", "department": "eng"}, ""); err != nil {
+		t.Fatal(err)
 	}
-	if !store.Delete([]byte("emp-1")) || len(store.GetByString("department", "eng")) != 1 {
-		t.Fatal("delete must strip named postings")
+	if _, err := store.Put(ctx, []byte("user-2"), []byte("profile-2"),
+		map[string]any{"passport": "P222", "department": "eng"}, ""); err != nil {
+		t.Fatal(err)
 	}
 
-	visited := make(chan struct{}, 2)
-	store.ForEachParallel(2, func(entry StoreEntry) {
-		if len(entry.PrimaryKey) == 0 {
-			t.Error("missing primary key")
-		}
-		visited <- struct{}{}
-	})
-	<-visited
-	<-visited
+	found, err := store.Get(ctx, []byte("user-1"), true, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found == nil || string(found.Payload) != "profile-1" {
+		t.Fatalf("row = %+v", found)
+	}
+	if found.Freshness.Behind {
+		t.Fatal("strict read must not report behind")
+	}
+
+	team, err := store.GetBy(ctx, "department", "eng", 0, true, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(team.Rows) != 2 {
+		t.Fatalf("department rows = %d, want 2", len(team.Rows))
+	}
+
+	solo, err := store.GetBy(ctx, "passport", "P222", 0, false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(solo.Rows) != 1 || string(solo.Rows[0].Key) != "user-2" {
+		t.Fatalf("passport rows = %+v", solo.Rows)
+	}
+
+	var keys []string
+	if err := store.Iterate(ctx, 256, func(row StoreRow) error {
+		keys = append(keys, string(row.Key))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 2 {
+		t.Fatalf("iterate keys = %v", keys)
+	}
+
+	if _, err := store.Clear(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if found, err := store.Get(ctx, []byte("user-1"), false, 0); err != nil || found != nil {
+		t.Fatalf("cleared get = %+v, %v", found, err)
+	}
+	empty, err := store.GetBy(ctx, "department", "eng", 0, true, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(empty.Rows) != 0 {
+		t.Fatalf("cleared get_by rows = %d", len(empty.Rows))
+	}
+
+	if _, err := client.StateStores.Drop(ctx, name); err != nil {
+		t.Fatal(err)
+	}
 }

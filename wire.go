@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math"
+	"sort"
 	"strconv"
 )
 
@@ -226,4 +228,128 @@ func decodeMemberPage(object map[string]any) MemberPage {
 		Positions:      positions,
 		OwnershipEpoch: intField(object, "ownership_epoch"),
 	}
+}
+
+// encodeIndexValue maps one typed scalar to the wire IndexValue shape;
+// float values are refused — the wire carries exact i64/text/bytes.
+func encodeIndexValue(value any) (map[string]any, error) {
+	switch v := value.(type) {
+	case nil:
+		return map[string]any{"kind": "null"}, nil
+	case bool:
+		return map[string]any{"kind": "bool", "value": v}, nil
+	case int:
+		return map[string]any{"kind": "i64", "value": int64(v)}, nil
+	case int8:
+		return map[string]any{"kind": "i64", "value": int64(v)}, nil
+	case int16:
+		return map[string]any{"kind": "i64", "value": int64(v)}, nil
+	case int32:
+		return map[string]any{"kind": "i64", "value": int64(v)}, nil
+	case int64:
+		return map[string]any{"kind": "i64", "value": v}, nil
+	case uint:
+		return map[string]any{"kind": "i64", "value": int64(v)}, nil
+	case uint8:
+		return map[string]any{"kind": "i64", "value": int64(v)}, nil
+	case uint16:
+		return map[string]any{"kind": "i64", "value": int64(v)}, nil
+	case uint32:
+		return map[string]any{"kind": "i64", "value": int64(v)}, nil
+	case uint64:
+		if v > math.MaxInt64 {
+			return nil, fmt.Errorf("StateStore i64 value overflows: %d", v)
+		}
+		return map[string]any{"kind": "i64", "value": int64(v)}, nil
+	case string:
+		return map[string]any{"kind": "text", "value": v}, nil
+	case []byte:
+		return map[string]any{
+			"kind":         "bytes",
+			"value_base64": base64.StdEncoding.EncodeToString(v),
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported StateStore value type %T", value)
+	}
+}
+
+// encodeIndexValues maps a scalar or []any to the typed values list a
+// named-key lookup or posting carries (one value per component).
+func encodeIndexValues(value any) ([]map[string]any, error) {
+	list, isList := value.([]any)
+	if !isList {
+		list = []any{value}
+	}
+	values := make([]map[string]any, 0, len(list))
+	for _, item := range list {
+		encoded, err := encodeIndexValue(item)
+		if err != nil {
+			return nil, err
+		}
+		values = append(values, encoded)
+	}
+	return values, nil
+}
+
+// encodeNamedValues maps {"department": "eng", "composite": []any{v1,
+// v2}} to the mutation's named entries.
+func encodeNamedValues(named map[string]any) ([]map[string]any, error) {
+	names := make([]string, 0, len(named))
+	for name := range named {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	entries := make([]map[string]any, 0, len(names))
+	for _, name := range names {
+		values, err := encodeIndexValues(named[name])
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, map[string]any{"name": name, "values": values})
+	}
+	return entries, nil
+}
+
+func decodeMutationResult(raw json.RawMessage) (MutationResult, error) {
+	object, err := decodeBody(raw)
+	if err != nil {
+		return MutationResult{}, err
+	}
+	return MutationResult{
+		StoreID:      stringField(object, "store_id"),
+		MutationID:   stringField(object, "mutation_id"),
+		Sequence:     intField(object, "sequence"),
+		Deduplicated: boolField(object, "deduplicated"),
+	}, nil
+}
+
+func decodeStoreFreshness(object map[string]any) StoreFreshness {
+	return StoreFreshness{
+		AppliedSeq:   intField(object, "applied_seq"),
+		CommittedSeq: intField(object, "committed_seq"),
+		Behind:       boolField(object, "behind"),
+		ServedBy:     stringField(object, "served_by"),
+	}
+}
+
+func decodeStoreRows(object map[string]any, freshness *StoreFreshness) []StoreRow {
+	raw, ok := object["rows"].([]any)
+	if !ok {
+		return nil
+	}
+	rows := make([]StoreRow, 0, len(raw))
+	for _, item := range raw {
+		node, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		key, _ := base64.StdEncoding.DecodeString(stringField(node, "key_base64"))
+		payload, _ := base64.StdEncoding.DecodeString(stringField(node, "payload_base64"))
+		row := StoreRow{Key: key, Payload: payload, Freshness: freshness}
+		if cursor := stringField(node, "applied_cursor"); cursor != "" {
+			row.AppliedCursor = &cursor
+		}
+		rows = append(rows, row)
+	}
+	return rows
 }

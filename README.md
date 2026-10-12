@@ -77,33 +77,25 @@ func main() {
 }
 ```
 
-### Managed consume: `load` + `Subscribe`
+### Node-side StateStore
 
 ```go
-store := whitewater.NewRecordStore("employee-store").
-    AddKey("passport").AddKey("department")            // up to 10 named keys
+spec, _ := whitewater.NewStateStore("accounts.employees")
+spec.AddKey("passport", true).AddKey("department", false)  // up to 10 named keys
+store, err := client.StateStores.Define(ctx, spec, "")
 
-// One-shot bulk read of committed history, projected per row.
-_, err = client.LoadStore(store).FromFeed(ctx, "hr.employees",
-    whitewater.StartBeginning(),
-    func(s *whitewater.RecordStore, r whitewater.Record) {
-        s.Upsert(r).WithKey(r.Key).WithNamedKey("passport", r.Metadata["pp"])
-    })
+_, err = store.Put(ctx, []byte("user-1"), []byte("profile-1"),
+    map[string]any{"passport": "P111", "department": "eng"}, "")
 
-rec, _ := store.GetString("emp-1")                      // by primary key
-rows := store.GetByString("passport", "P123")           // by named key — non-unique
-store.ForEachParallel(3, func(e whitewater.StoreEntry) { export(e.Record) })
-
-// ...then keep it warm: provisions the Reader, runs
-// Open -> [Fetch -> onRecords -> Ack] -> Close on a background goroutine.
-sub := client.Subscribe(ctx, "hr-view", "hr.employees", whitewater.StartNow(),
-    store.PutAll, func(err error) { log.Println("subscription ended:", err) })
-defer sub.Close()
+row, _ := store.Get(ctx, []byte("user-1"), true, 500)       // strict read
+rows, _ := store.GetBy(ctx, "department", "eng", 0, false, 0)  // every match
+_ = store.Iterate(ctx, 256, func(r whitewater.StoreRow) error { export(r); return nil })
 ```
 
-`client.Feeds.LoadInto`/`Load` remain the lighter one-shot reads when
-you don't need named-key projections. See
-[docs/stores.md](docs/stores.md) for the full store guide.
+The facade is thin — rows live on the Nodes (RF3 + Fjall) and reads
+carry freshness evidence. See [docs/stores.md](docs/stores.md) for the
+full guide. `client.Feeds.Load` remains the lighter one-shot history
+read into any `func([]Record) error` sink.
 
 ### Error handling
 

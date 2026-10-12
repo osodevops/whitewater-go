@@ -11,8 +11,9 @@ import (
 // Client is the entry point: resource management (WCL, typed commands,
 // health) plus the Writer, Reader, Subscription-member, and Feed facades.
 type Client struct {
-	transport *transport
-	Feeds     *FeedClient
+	transport   *transport
+	Feeds       *FeedClient
+	StateStores *StateStoresClient
 }
 
 // NewClient builds a client against one or more Node endpoints.
@@ -23,8 +24,9 @@ func NewClient(apiKey string, endpoints []string, timeout time.Duration) *Client
 	}
 	transport := newTransport(endpoints, apiKey, timeout)
 	return &Client{
-		transport: transport,
-		Feeds:     &FeedClient{transport: transport},
+		transport:   transport,
+		Feeds:       &FeedClient{transport: transport},
+		StateStores: &StateStoresClient{transport: transport},
 	}
 }
 
@@ -76,7 +78,7 @@ func (c *Client) WCLWithID(
 	if err != nil {
 		return ControlExecution{}, err
 	}
-	return c.decodeExecution(raw)
+	return decodeControlExecution(raw)
 }
 
 // Commands executes typed control commands, e.g.
@@ -91,10 +93,10 @@ func (c *Client) Commands(
 	if err != nil {
 		return ControlExecution{}, err
 	}
-	return c.decodeExecution(raw)
+	return decodeControlExecution(raw)
 }
 
-func (c *Client) decodeExecution(raw json.RawMessage) (ControlExecution, error) {
+func decodeControlExecution(raw json.RawMessage) (ControlExecution, error) {
 	body, err := decodeBody(raw)
 	if err != nil {
 		return ControlExecution{}, err
