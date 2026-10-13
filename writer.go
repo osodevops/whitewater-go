@@ -19,6 +19,13 @@ type WriterSessionClient struct {
 	transport    *transport
 	writer       string
 	sessionEpoch int64
+	compression  bool
+}
+
+func (w *WriterSessionClient) UseCompression(enabled bool) *WriterSessionClient {
+	configured := *w
+	configured.compression = enabled
+	return &configured
 }
 
 // Append issues one idempotent append; the same RequestID dedups.
@@ -29,17 +36,20 @@ func (w *WriterSessionClient) Append(
 	if requestID == "" {
 		requestID = newUUID()
 	}
-	raw, err := w.transport.post(ctx, "/v1/writers/append", encodeAppendRequest(
-		requestID, w.writer, w.sessionEpoch,
-		input.Key, input.Payload, input.EventTimeNs, input.Metadata))
+	body := encodeAppendRequest(requestID, w.writer, w.sessionEpoch,
+		input.Key, input.Payload, input.EventTimeNs, input.Metadata)
+	if w.compression {
+		body["use_compression"] = true
+	}
+	raw, err := w.transport.post(ctx, "/v1/writers/append", body)
 	if err != nil {
 		return AppendResult{}, err
 	}
-	body, err := decodeBody(raw)
+	response, err := decodeBody(raw)
 	if err != nil {
 		return AppendResult{}, err
 	}
-	return decodeAppendResult(body), nil
+	return decodeAppendResult(response), nil
 }
 
 // AppendBatch issues one epoch-fenced batch; each record carries its
@@ -53,9 +63,12 @@ func (w *WriterSessionClient) AppendBatch(
 		if requestID == "" {
 			requestID = newUUID()
 		}
-		wire = append(wire, encodeAppendRequest(
-			requestID, w.writer, w.sessionEpoch,
-			input.Key, input.Payload, input.EventTimeNs, input.Metadata))
+		body := encodeAppendRequest(requestID, w.writer, w.sessionEpoch,
+			input.Key, input.Payload, input.EventTimeNs, input.Metadata)
+		if w.compression {
+			body["use_compression"] = true
+		}
+		wire = append(wire, body)
 	}
 	raw, err := w.transport.post(ctx, "/v1/writers/append-batch",
 		map[string]any{"records": wire})

@@ -10,7 +10,14 @@ import (
 // anonymous temporary fetches, and single-shot appends with a
 // caller-supplied writer identity — no named session required.
 type FeedClient struct {
-	transport *transport
+	transport   *transport
+	compression bool
+}
+
+func (f *FeedClient) UseCompression(enabled bool) *FeedClient {
+	configured := *f
+	configured.compression = enabled
+	return &configured
 }
 
 // Records returns committed record history via GET /v1/feeds/records.
@@ -77,8 +84,11 @@ func (f *FeedClient) Append(
 	if record.RequestID == "" {
 		record.RequestID = newUUID()
 	}
-	raw, err := f.transport.post(
-		ctx, "/v1/feeds/append", encodeFeedAppendRequest(feed, record))
+	request := encodeFeedAppendRequest(feed, record)
+	if f.compression {
+		request["use_compression"] = true
+	}
+	raw, err := f.transport.post(ctx, "/v1/feeds/append", request)
 	if err != nil {
 		return AppendResult{}, err
 	}

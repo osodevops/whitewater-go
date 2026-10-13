@@ -204,7 +204,7 @@ func callOp(ctx context.Context, client *Client, step map[string]any) (any, erro
 			EventTimeNs:     int64PtrArg(args["event_time_ns"]),
 			Metadata:        metadataArg(args["metadata"]),
 		}
-		result, err := client.Feeds.Append(ctx, str(args, "feed"), record)
+		result, err := client.Feeds.UseCompression(args["use_compression"] == true).Append(ctx, str(args, "feed"), record)
 		if err != nil {
 			return nil, err
 		}
@@ -239,7 +239,7 @@ func callOp(ctx context.Context, client *Client, step map[string]any) (any, erro
 			EventTimeNs: int64PtrArg(args["event_time_ns"]),
 			Metadata:    metadataArg(args["metadata"]),
 		}
-		writer := client.Writer(str(args, "writer"), int64Arg(args, "session_epoch"))
+		writer := client.Writer(str(args, "writer"), int64Arg(args, "session_epoch")).UseCompression(args["use_compression"] == true)
 		result, err := writer.Append(ctx, input)
 		if err != nil {
 			return nil, err
@@ -262,7 +262,7 @@ func callOp(ctx context.Context, client *Client, step map[string]any) (any, erro
 				Metadata:    metadataArg(record["metadata"]),
 			})
 		}
-		result, err := writer.AppendBatch(ctx, inputs)
+		result, err := writer.UseCompression(args["use_compression"] == true).AppendBatch(ctx, inputs)
 		if err != nil {
 			return nil, err
 		}
