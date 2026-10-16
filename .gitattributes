@@ -1,0 +1,6 @@
+# Keep LF in the working tree so gofmt agrees on every OS (Windows
+# runners check out with core.autocrlf=true otherwise).
+*.go    text eol=lf
+*.mod   text eol=lf
+*.sum   text eol=lf
+*.sh    text eol=lf
