@@ -1,0 +1,67 @@
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    name: go ${{ matrix.go }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        go: ['1.22', '1.23']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+
+      - name: Format check
+        run: |
+          files=$(gofmt -l .)
+          if [ -n "$files" ]; then
+            echo "unformatted:"; echo "$files"; exit 1
+          fi
+        shell: bash
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Unit tests
+        run: go test ./... -count=1 -v
+
+      - name: Upload test log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-log-${{ matrix.os }}-go${{ matrix.go }}
+          path: '**/*.txt'
+          retention-days: 7
+
+  conformance:
+    name: live conformance (three-node Riverbed)
+    runs-on: ubuntu-latest
+    # Only runs when the conformance Riverbed is provisioned; skips
+    # cleanly otherwise so PR checks never depend on live Nodes.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Conformance suite (skipped without endpoints)
+        run: go test -run Conformance -v .
+        env:
+          WHITEWATER_CONFORMANCE_URLS: ${{ vars.WHITEWATER_CONFORMANCE_URLS }}
+          WHITEWATER_FIXTURE_DIR: ${{ vars.WHITEWATER_FIXTURE_DIR }}

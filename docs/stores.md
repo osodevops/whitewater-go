@@ -18,6 +18,39 @@ store, err := client.StateStores.Define(ctx, spec, "")
 declared at creation; at most `whitewater.MaxNamedKeys` (10). Adding a
 key to an existing store has no effect server-side.
 
+## Typed stores — codecs do the serialization
+
+The raw facade carries `[]byte` keys/payloads; `Store[K, V]` binds a
+key codec and a payload codec once so every `Put`/`Get`/`Iterate`
+serializes through them — matching the Java SDK's `StateStore<K,V>`:
+
+```go
+type Profile struct {
+    ID   string `json:"id"`
+    Name string `json:"name"`
+}
+
+// String keys + JSON payloads — codecs inferred from the types.
+profiles, _ := whitewater.StoreFor[Profile](client, "accounts.employees")
+// …or explicit codecs — protobuf/msgpack/custom via FuncCodec:
+//   StoreOf(client, "accounts.employees", StringCodec(), proto)
+
+_, err = profiles.Put(ctx, "user-1", profile,
+    map[string]any{"passport": "P111"}, "")
+row, _ := profiles.Get(ctx, "user-1", true, 500)   // row.Value is Profile
+_ = profiles.Iterate(ctx, 256, func(r whitewater.Row[string, Profile]) error {
+    return export(r)
+})
+
+// Rebind under different codecs — no wire call:
+raw := whitewater.RebindStore(profiles, whitewater.StringCodec(),
+    whitewater.BytesCodec())
+```
+
+`client.Store(name)` binds the default `Store[string, []byte]`; the
+byte-level `client.StateStore(name)` facade below remains for raw
+access and declaration.
+
 ## Writing
 
 ```go
