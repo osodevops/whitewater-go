@@ -179,6 +179,40 @@ default:                               // refused; fix the request
 }
 ```
 
+### Pipes, indexes, and operations
+
+Managed Pipes and replicated Indexes share the same topology-free model
+— names, never partitions or Nodes:
+
+```go
+// Pipe lifecycle: describe, pause, resume, drop.
+pipe := client.Pipe("orders.relay")
+info, _ := pipe.Describe(ctx)   // stage, operation, outputs, status
+_ = pipe.Pause(ctx); _ = pipe.Resume(ctx); _ = pipe.Drop(ctx)
+pipes, _ := client.Pipes(ctx)   // the declared catalog
+
+// Index queries: exact, prefix, or range predicates over typed values.
+page, _ := client.QueryIndex(ctx, "crm.byregion",
+    whitewater.IndexRange([]any{"emea"},
+        whitewater.InclusiveBound(0), whitewater.ExclusiveBound(99)),
+    50,    // limit
+    true)  // strict: wait for the committed target rather than stale
+for _, row := range page.Rows { /* row.Key / row.Payload bytes */ }
+
+// Demand observability: typed rows + per-domain rollups.
+report, _ := client.DemandFeeds(ctx)
+appended, _ := report.Rows[0].Counter("appended_records")
+client.DemandReaders(ctx); client.DemandSubscriptions(ctx)
+client.DemandIndexes(ctx); client.DemandPipes(ctx)
+hot, _ := client.HotKeys(ctx) // dominant-key evidence per feed
+```
+
+Pipe operation payloads (`PipeInfo.Operation`) and demand counter
+fields (`DemandRow.Fields`, `HotKey.Evidence`) stay opaque maps so
+server-side variants evolve without an SDK bump. `QueryIndex` values
+accept the same typed scalars as StateStore named values — floats are
+refused because the wire carries exact `i64`/`text`/`bytes`.
+
 ## Contract parity
 
 This SDK implements the versioned wire contract in
