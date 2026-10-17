@@ -405,7 +405,19 @@ func (f *Feed[K, V]) Subscribe(
 	onRecords func([]FeedMessage[K, V]) error,
 	onError func(error),
 ) *Subscription {
-	return f.client.Subscribe(ctx, reader, f.name, start,
+	return f.subscribeDecoded(
+		ctx, reader, start, subscribeCapacity, onRecords, onError)
+}
+
+func (f *Feed[K, V]) subscribeDecoded(
+	ctx context.Context,
+	reader string,
+	start ReaderStart,
+	capacity int,
+	onRecords func([]FeedMessage[K, V]) error,
+	onError func(error),
+) *Subscription {
+	return f.client.subscribe(ctx, reader, f.name, start, capacity,
 		func(records []Record) error {
 			messages, err := decodeFeedMessages[K, V](records, f.keyCodec, f.valueCodec)
 			if err != nil {
@@ -414,6 +426,22 @@ func (f *Feed[K, V]) Subscribe(
 			return onRecords(messages)
 		},
 		onError)
+}
+
+// Consumer binds a permanent, supervised consumer to this Feed's named
+// Reader — the durable-Reader equivalent of Kafka's poll loop with the
+// plumbing removed. Iterate a channel of decoded records or run a
+// per-record handler; open/fetch/ack/reopen/backoff stay internal:
+//
+//	consumer := feed.Consumer("enricher")
+//	for msg := range consumer.Messages(ctx) {
+//	    process(msg)
+//	}
+//	if err := consumer.Err(); err != nil { ... }
+//
+// See FeedConsumer for the full contract.
+func (f *Feed[K, V]) Consumer(reader string) *FeedConsumer[K, V] {
+	return newFeedConsumer(f, reader)
 }
 
 func (f *Feed[K, V]) openWriterSession(ctx context.Context, writerName string) (int64, error) {

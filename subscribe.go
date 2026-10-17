@@ -90,8 +90,21 @@ func (c *Client) Subscribe(
 	onRecords func([]Record) error,
 	onError func(error),
 ) *Subscription {
+	return c.subscribe(
+		ctx, reader, feed, start, subscribeCapacity, onRecords, onError)
+}
+
+func (c *Client) subscribe(
+	ctx context.Context,
+	reader string,
+	feed string,
+	start ReaderStart,
+	capacity int,
+	onRecords func([]Record) error,
+	onError func(error),
+) *Subscription {
 	sub := &Subscription{done: make(chan struct{}), closed: make(chan struct{})}
-	go sub.run(ctx, c, reader, feed, start, onRecords, onError)
+	go sub.run(ctx, c, reader, feed, start, capacity, onRecords, onError)
 	return sub
 }
 
@@ -117,6 +130,7 @@ func (s *Subscription) run(
 	readerName string,
 	feed string,
 	start ReaderStart,
+	capacity int,
 	onRecords func([]Record) error,
 	onError func(error),
 ) {
@@ -139,7 +153,7 @@ func (s *Subscription) run(
 	var session ReaderSession
 	for {
 		var err error
-		session, err = reader.Open(loopCtx, subscribeCapacity)
+		session, err = reader.Open(loopCtx, capacity)
 		if err == nil {
 			break
 		}
@@ -155,7 +169,7 @@ func (s *Subscription) run(
 		_, _ = reader.Close(closeCtx, session)
 	}()
 	for {
-		page, err := reader.Fetch(loopCtx, session, subscribeCapacity)
+		page, err := reader.Fetch(loopCtx, session, capacity)
 		if err != nil {
 			if !retryable(err) || !sleepOrDone(loopCtx, retryDelay) {
 				s.fail(err, onError)

@@ -95,6 +95,42 @@ raw := whitewater.RebindFeed(users, whitewater.StringCodec(), whitewater.BytesCo
 `client.Feed(name)` returns the default `Feed[string, []byte]` — string
 keys and untouched payload bytes, the escape hatch to the wire.
 
+### Permanent consumers — the Kafka loop without the plumbing
+
+`feed.Consumer(name)` binds the durable named Reader (the consumer-group
+equivalent) and owns the fetch → deliver → ack cycle: transient failures
+retry with backoff, a fenced session re-opens, progress resumes from the
+server-side cursor. Your code ranges a channel of decoded records:
+
+```go
+consumer := in.Consumer("enricher")
+for msg := range consumer.Messages(ctx) {   // msg.Value is UpdateRequest
+    process(msg)
+}
+if err := consumer.Err(); err != nil { ... } // startup refusal only
+
+// or the handler form, blocking until ctx cancel/Close:
+err := in.Consumer("enricher").Run(ctx, func(m FeedMessage[string, UpdateRequest]) error {
+    return process(m)
+})
+```
+
+- The page acks after every record's delivery succeeds — a handler
+  error (or an abandoned channel) leaves it unacked, so it redelivers
+  (at-least-once: dedupe effects via `RequestID`, route poison pills to
+  a DLQ yourself).
+- `Run`/`Err` return only for startup refusals and local errors — bad
+  names, denied auth — everything after the first open is supervised
+  forever. `Close()` signals stop from anywhere (SIGTERM handler or
+  inside the handler itself); `Wait()`/`Done()` await full stop.
+- `.StartAt`, `.Capacity(n)`, `.Backoff(min, max)`, `.OnError(fn)`,
+  `.LastError()` tune and observe it; `feed.Subscribe` remains for
+  page-oriented control.
+
+A complete enrichment service — durable consumer, named-key fallback,
+DLQ, idempotent outputs, counters — is
+[examples/enrichusers](examples/enrichusers/main.go).
+
 ### Wire-level API
 
 The raw `[]byte` API stays available for full control:
@@ -157,11 +193,19 @@ _ = profiles.Iterate(ctx, 256,
 raw := whitewater.RebindStore(profiles, whitewater.StringCodec(), whitewater.BytesCodec())
 ```
 
+```go
+user, found, _ := profiles.Find(ctx, email, false, 0)
+user, found, _ = profiles.FindBy(ctx, "user_id", userID, false, 0)
+count, _ := counters.GetOrDefault(ctx, bucket, 0)
+```
+
 `client.Store(name)` binds the default `Store[string, []byte]`; the
 byte-level `client.StateStore(name)` facade remains for raw access.
 The facade is thin — rows live on the Nodes (RF3 + Fjall) and reads
 carry freshness evidence. See [docs/stores.md](docs/stores.md) for the
-full guide. `client.Feeds.Load` remains the lighter one-shot history
+full guide. When you only need the value, `Find` (primary) and `FindBy`
+(named key, first match) return `(V, bool, error)`; `GetOrDefault`
+collapses miss handling to one line: `client.Feeds.Load` remains the lighter one-shot history
 read into any `func([]Record) error` sink.
 
 ### Error handling

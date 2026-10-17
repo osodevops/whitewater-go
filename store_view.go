@@ -177,6 +177,55 @@ func (s *Store[K, V]) GetBy(
 	return result, nil
 }
 
+// Find is the value-only primary lookup: the decoded value and true,
+// or the zero value and false when the key is absent. Get remains for
+// the row's freshness/applied-cursor evidence.
+func (s *Store[K, V]) Find(
+	ctx context.Context,
+	key K,
+	strict bool,
+	waitMs int,
+) (V, bool, error) {
+	row, err := s.Get(ctx, key, strict, waitMs)
+	if err != nil || row == nil {
+		var zero V
+		return zero, false, err
+	}
+	return row.Value, true, nil
+}
+
+// FindBy is the value-only named-key lookup: the first matching row's
+// decoded value and true, or the zero value and false on no match.
+// GetBy remains for every match plus freshness evidence.
+func (s *Store[K, V]) FindBy(
+	ctx context.Context,
+	namedKey string,
+	value any,
+	strict bool,
+	waitMs int,
+) (V, bool, error) {
+	rows, err := s.GetBy(ctx, namedKey, value, 1, strict, waitMs)
+	var zero V
+	if err != nil || len(rows.Rows) == 0 {
+		return zero, false, err
+	}
+	return rows.Rows[0].Value, true, nil
+}
+
+// GetOrDefault is the primary lookup returning fallback when the key
+// is absent -- counters and flags become one line.
+func (s *Store[K, V]) GetOrDefault(
+	ctx context.Context,
+	key K,
+	fallback V,
+) (V, error) {
+	value, found, err := s.Find(ctx, key, false, 0)
+	if err != nil || !found {
+		return fallback, err
+	}
+	return value, nil
+}
+
 // Delete removes the row and its named postings.
 func (s *Store[K, V]) Delete(
 	ctx context.Context,
