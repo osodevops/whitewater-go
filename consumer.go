@@ -226,27 +226,18 @@ func (c *FeedConsumer[K, V]) supervise(
 		defer close(out)
 	}
 	defer close(c.finished)
-	loopCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	go func() {
-		select {
-		case <-c.closing:
-			cancel()
-		case <-loopCtx.Done():
-		}
-	}()
 
 	backoff := c.initialBackoff
 	for {
-		if c.stopped() || loopCtx.Err() != nil {
+		if c.stopped() || ctx.Err() != nil {
 			return
 		}
 		var iterErr error
 		sub := c.feed.subscribeDecoded(
-			loopCtx, c.reader, c.start, c.capacity,
+			ctx, c.reader, c.start, c.capacity,
 			func(messages []FeedMessage[K, V]) error {
 				for _, message := range messages {
-					if err := deliver(loopCtx, message); err != nil {
+					if err := deliver(ctx, message); err != nil {
 						iterErr = err
 						return err
 					}
@@ -254,7 +245,14 @@ func (c *FeedConsumer[K, V]) supervise(
 				return nil
 			},
 			nil)
-		<-sub.Done()
+		select {
+		case <-sub.Done():
+		case <-c.closing:
+			// Graceful drain: Close signals the subscription's own
+			// stop so the in-flight page finishes and acks -- the
+			// request ctx must not die underneath it.
+			sub.Close()
+		}
 		sub.Close()
 		if c.stopped() || ctx.Err() != nil {
 			return
@@ -283,7 +281,7 @@ func (c *FeedConsumer[K, V]) supervise(
 				c.onError(err)                   // supervision
 			}()
 		}
-		if !c.sleep(loopCtx, backoff) {
+		if !c.sleep(ctx, backoff) {
 			return
 		}
 		if backoff < c.maxBackoff {

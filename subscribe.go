@@ -188,7 +188,13 @@ func (s *Subscription) run(
 			return
 		}
 		if page.DeliveredCursor != nil {
-			next, err := reader.Ack(loopCtx, session, *page.DeliveredCursor)
+			// Close may already have cancelled loopCtx -- Close waits
+			// for this page, so its ack must still reach the Node
+			// (graceful drain), bounded by its own deadline.
+			ackCtx, ackCancel := context.WithTimeout(
+				context.Background(), 5*time.Second)
+			next, err := reader.Ack(ackCtx, session, *page.DeliveredCursor)
+			ackCancel()
 			if err != nil {
 				if !retryable(err) || !sleepOrDone(loopCtx, retryDelay) {
 					s.fail(err, onError)
