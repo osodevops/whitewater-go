@@ -1,0 +1,41 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Resolve version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: Verification gate
+        run: |
+          go vet ./...
+          go build ./...
+
+      - name: Build source archive
+        run: |
+          mkdir -p dist
+          git archive --format=tar.gz --prefix="whitewater-go-${VERSION}/" -o "dist/whitewater-go-${VERSION}.tar.gz" HEAD
+
+      - name: Checksums
+        run: cd dist && sha256sum *.tar.gz > checksums.txt && cd -
+
+      - name: Create GitHub release
+        run: gh release create "${{ github.ref_name }}" dist/* --generate-notes --title "whitewater-go ${{ env.VERSION }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
