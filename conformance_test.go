@@ -1,16 +1,19 @@
 package whitewater
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,19 +23,33 @@ import (
 
 // Executes the shared fixture corpus under sdk/spec/conformance/ in
 // whitewater against a live Riverbed, per conformance/README.md. Skipped
-// unless WHITEWATER_CONFORMANCE_URLS and WHITEWATER_FIXTURE_DIR are set.
+// unless endpoints and a fixture dir are configured: the shared names
+// WHITEWATER_ENDPOINTS and WHITEWATER_SPEC_DIR win, with the legacy
+// WHITEWATER_CONFORMANCE_URLS / WHITEWATER_FIXTURE_DIR as fallbacks.
+// WHITEWATER_CHAOS_CMD names the driver fault hook without which chaos.*
+// steps report unsupported.
 //
 //	go test -run Conformance -v .
 func TestSharedConformanceCorpus(t *testing.T) {
-	baseURLs := os.Getenv("WHITEWATER_CONFORMANCE_URLS")
-	fixtureDir := os.Getenv("WHITEWATER_FIXTURE_DIR")
-	if baseURLs == "" || fixtureDir == "" {
-		t.Skip("set WHITEWATER_CONFORMANCE_URLS and WHITEWATER_FIXTURE_DIR")
+	baseURLs := os.Getenv("WHITEWATER_ENDPOINTS")
+	if baseURLs == "" {
+		baseURLs = os.Getenv("WHITEWATER_CONFORMANCE_URLS")
 	}
-	apiKey := os.Getenv("FINNSTREAM_ADMIN_API_KEY")
+	fixtureDir := os.Getenv("WHITEWATER_SPEC_DIR")
+	if fixtureDir == "" {
+		fixtureDir = os.Getenv("WHITEWATER_FIXTURE_DIR")
+	}
+	if baseURLs == "" || fixtureDir == "" {
+		t.Skip("set WHITEWATER_ENDPOINTS and WHITEWATER_SPEC_DIR")
+	}
+	apiKey := os.Getenv("WHITEWATER_API_KEY")
+	if apiKey == "" {
+		apiKey = os.Getenv("FINNSTREAM_ADMIN_API_KEY")
+	}
 	if apiKey == "" {
 		apiKey = "whitewater-local-development-admin-key"
 	}
+	chaosCommand := os.Getenv("WHITEWATER_CHAOS_CMD")
 	files, err := filepath.Glob(filepath.Join(fixtureDir, "*.json"))
 	if err != nil || len(files) == 0 {
 		t.Fatalf("no fixtures under %s", fixtureDir)
@@ -54,7 +71,7 @@ func TestSharedConformanceCorpus(t *testing.T) {
 				scenarioKey = apiKey
 			}
 			client := NewClient(scenarioKey, strings.Split(baseURLs, ","), 30*time.Second)
-			runScenario(t, client, scenario)
+			runScenario(t, client, scenario, chaosCommand)
 		})
 	}
 }
@@ -65,7 +82,11 @@ type scenarioContext struct {
 	bindings map[string]any
 }
 
-func runScenario(t *testing.T, client *Client, scenario map[string]any) {
+// runScenario drives one fixture: every step substitutes tokens, polls on
+// the poll budget while `expect` keeps failing, rides infrastructure
+// transients (transport errors and 5xx) on a separate budget without
+// spending poll attempts, binds the result, then asserts expectations.
+func runScenario(t *testing.T, client *Client, scenario map[string]any, chaosCommand string) {
 	t.Helper()
 	name, _ := scenario["scenario"].(string)
 	ctx := &scenarioContext{
@@ -78,320 +99,497 @@ func runScenario(t *testing.T, client *Client, scenario map[string]any) {
 		step, _ := stepRaw.(map[string]any)
 		op, _ := step["op"].(string)
 		expect, _ := step["expect"].(map[string]any)
-		errorCode, _ := expect["error_code"].(string)
-		errorStatus, hasErrorStatus := expect["error_status"].(float64)
-		expectsError := errorCode != "" || hasErrorStatus
-		call := substitute(step, ctx).(map[string]any)
 
-		result, err := callOp(context.Background(), client, call)
-		if expectsError {
-			if err == nil {
-				t.Fatalf("%s: step %d (%s) succeeded, expected error %v",
-					name, index+1, op, expect)
-			}
-			var wwErr *Error
-			if !errors.As(err, &wwErr) {
-				t.Fatalf("%s: step %d (%s) failed without a typed error: %v",
-					name, index+1, op, err)
-			}
-			if errorCode != "" && wwErr.Code != errorCode {
-				t.Fatalf("%s: step %d (%s) failed with %q, expected %q",
-					name, index+1, op, wwErr.Code, errorCode)
-			}
-			if hasErrorStatus && wwErr.Status != int(errorStatus) {
-				t.Fatalf("%s: step %d (%s) failed with HTTP %d, expected %d",
-					name, index+1, op, wwErr.Status, int(errorStatus))
-			}
-			result = map[string]any{"error_code": wwErr.Code}
-		} else if err != nil {
-			t.Fatalf("%s: step %d (%s) failed: %v", name, index+1, op, err)
+		if strings.HasPrefix(op, "chaos.") {
+			runChaos(t, name, index, op, step, ctx, chaosCommand)
+			continue
 		}
-		if bind, ok := step["bind"].(string); ok {
-			ctx.bindings[bind] = result
+		if _, _, ok := endpointFor(op); !ok &&
+			op != "feed.records" && op != "health" && op != "statestore.mutate" {
+			t.Fatalf("%s: step %d (%s) unsupported op", name, index+1, op)
 		}
-		for path, expectedRaw := range expect {
-			if path == "error_code" || path == "error_status" {
+
+		// Anonymous {{uuid}} occurrences bind once per step so transient
+		// retries and poll re-dispatches reuse one request identity; named
+		// {{uuid:name}} tokens memoize on the context either way.
+		argsTemplate, _ := step["args"].(map[string]any)
+		argsTemplate = bindAnonymousUUIDs(argsTemplate, index)
+
+		poll, _ := step["poll"].(map[string]any)
+		pollTimes := int(int64Value(poll["times"]))
+		pollInterval := int64Value(poll["interval_ms"])
+		if pollTimes <= 0 {
+			pollTimes = 1
+		}
+		if pollTimes > 30 {
+			pollTimes = 30
+		}
+		if pollInterval <= 0 {
+			pollInterval = 500
+		}
+		if pollInterval > 10_000 {
+			pollInterval = 10_000
+		}
+
+		attempt := 0
+		transientAttempts := 0
+		var status int
+		var body any
+		for {
+			args := substitute(argsTemplate, ctx)
+			var err error
+			status, body, err = dispatch(context.Background(), client, op, args)
+			if err != nil {
+				if strings.HasPrefix(err.Error(), "transport:") && transientAttempts < 120 {
+					transientAttempts++
+					time.Sleep(500 * time.Millisecond)
+					continue
+				}
+				attempt++
+				if attempt < pollTimes {
+					time.Sleep(time.Duration(pollInterval) * time.Millisecond)
+					continue
+				}
+				t.Fatalf("%s: step %d (%s) failed: %v", name, index+1, op, err)
+			}
+			if status >= 500 && transientAttempts < 120 {
+				transientAttempts++
+				time.Sleep(500 * time.Millisecond)
 				continue
 			}
-			expected := substitute(expectedRaw, ctx)
-			checkExpectation(t, name, index+1, op, path, expected, result, ctx)
+			attempt++
+			if expect != nil {
+				substituted := substitute(expect, ctx).(map[string]any)
+				if message := checkExpect(status, body, substituted, ctx); message != "" {
+					if attempt < pollTimes {
+						time.Sleep(time.Duration(pollInterval) * time.Millisecond)
+						continue
+					}
+					t.Fatalf("%s: step %d (%s) expectation failed (status %d): %s",
+						name, index+1, op, status, message)
+				}
+			}
+			break
+		}
+		if bind, ok := step["bind"].(string); ok {
+			ctx.bindings[bind] = body
 		}
 	}
 }
 
-func checkExpectation(
-	t *testing.T, name string, index int, op, path string,
-	expected, result any, ctx *scenarioContext,
-) {
+// runChaos hands the step to the environment's fault driver:
+// `WHITEWATER_CHAOS_CMD <op> <rendered args...>`. No hook reports
+// unsupported explicitly per the corpus contract.
+func runChaos(t *testing.T, name string, index int, op string, step map[string]any, ctx *scenarioContext, command string) {
 	t.Helper()
-	actual := digPath(result, path)
-	fail := func(format string, args ...any) {
-		t.Fatalf("%s: step %d (%s) expectation %q failed: %s",
-			name, index, op, path, fmt.Sprintf(format, args...))
+	args, _ := step["args"].(map[string]any)
+	rendered := substitute(args, ctx).(map[string]any)
+	action := op
+	for _, key := range sortedKeys(rendered) {
+		text := fmt.Sprint(rendered[key])
+		action += " " + text
 	}
+	if command == "" {
+		t.Fatalf("%s: step %d (%s) unsupported: no WHITEWATER_CHAOS_CMD hook installed",
+			name, index+1, op)
+	}
+	shell, flag := "sh", "-c"
+	if runtime.GOOS == "windows" {
+		shell, flag = "cmd", "/C"
+	}
+	invocation := exec.Command(shell, flag, command+" "+action)
+	output, err := invocation.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s: step %d (%s) chaos hook failed: %v: %s",
+			name, index+1, op, err, output)
+	}
+}
+
+func sortedKeys(object map[string]any) []string {
+	keys := make([]string, 0, len(object))
+	for key := range object {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// bindAnonymousUUIDs rewrites every anonymous {{uuid}} inside a step's
+// args to a deterministic {{uuid:anon-<step>-<ordinal>}} so repeated
+// substitutions mint one identity per occurrence.
+func bindAnonymousUUIDs(args map[string]any, step int) map[string]any {
+	ordinal := 0
+	var walk func(node any) any
+	walk = func(node any) any {
+		switch typed := node.(type) {
+		case map[string]any:
+			out := map[string]any{}
+			for key, value := range typed {
+				out[key] = walk(value)
+			}
+			return out
+		case []any:
+			out := make([]any, 0, len(typed))
+			for _, item := range typed {
+				out = append(out, walk(item))
+			}
+			return out
+		case string:
+			for strings.Contains(typed, "{{uuid}}") {
+				typed = strings.Replace(
+					typed, "{{uuid}}",
+					fmt.Sprintf("{{uuid:anon-%d-%d}}", step, ordinal), 1)
+				ordinal++
+			}
+			return typed
+		default:
+			return node
+		}
+	}
+	return walk(args).(map[string]any)
+}
+
+// -- dispatch -------------------------------------------------------------
+
+// endpointFor maps the shared op vocabulary onto the wire surface; the
+// fixtures assert wire names directly.
+func endpointFor(op string) (string, string, bool) {
+	paths := map[string][2]string{
+		"wcl":                    {"POST", "/v1/admin/wcl"},
+		"admin.wcl":              {"POST", "/v1/admin/wcl"},
+		"admin.commands":         {"POST", "/v1/admin/commands"},
+		"writer.append":          {"POST", "/v1/writers/append"},
+		"writer.append_batch":    {"POST", "/v1/writers/append-batch"},
+		"reader.open":            {"POST", "/v1/readers/open"},
+		"reader.fetch":           {"POST", "/v1/readers/fetch"},
+		"reader.ack":             {"POST", "/v1/readers/ack"},
+		"reader.close":           {"POST", "/v1/readers/close"},
+		"reader.temporary_fetch": {"POST", "/v1/readers/temporary/fetch"},
+		"feed.append":            {"POST", "/v1/feeds/append"},
+		"member.join":            {"POST", "/v1/subscriptions/members/join"},
+		"member.claim":           {"POST", "/v1/subscriptions/members/claim"},
+		"member.renew":           {"POST", "/v1/subscriptions/members/renew"},
+		"member.release":         {"POST", "/v1/subscriptions/members/release"},
+		"member.transfer":        {"POST", "/v1/subscriptions/members/transfer"},
+		"member.fetch":           {"POST", "/v1/subscriptions/members/fetch"},
+		"member.ack":             {"POST", "/v1/subscriptions/members/ack"},
+		"subscription.seek":      {"POST", "/v1/subscriptions/seek"},
+		"statestore.lookup":      {"POST", "/v1/state-stores/lookup"},
+		"statestore.get_by":      {"POST", "/v1/state-stores/get-by"},
+		"statestore.iterate":     {"POST", "/v1/state-stores/iterate"},
+		"statestore.clear":       {"POST", "/v1/state-stores/clear"},
+	}
+	entry, ok := paths[op]
+	if !ok {
+		return "", "", false
+	}
+	return entry[0], entry[1], true
+}
+
+// dispatch executes one op over the wire and returns the HTTP status plus
+// decoded body. Only transport-level failures (unreachable, encode) come
+// back as `transport:` errors the transient budget covers.
+func dispatch(ctx context.Context, client *Client, op string, args any) (int, any, error) {
+	if op == "health" {
+		return wireGet(ctx, client, "/health")
+	}
+	if op == "feed.records" {
+		object, _ := args.(map[string]any)
+		path := "/v1/feeds/records?feed=" + url.QueryEscape(str(object, "feed"))
+		if limit := int64Arg(object, "limit"); limit > 0 {
+			path += "&limit=" + strconv.FormatInt(limit, 10)
+		}
+		if after := str(object, "after"); after != "" {
+			path += "&after=" + url.QueryEscape(after)
+		}
+		status, body, err := wireGet(ctx, client, path)
+		if err != nil {
+			return 0, nil, err
+		}
+		if records, ok := body.([]any); ok {
+			return status, map[string]any{"records": records}, nil
+		}
+		return status, body, nil
+	}
+	if op == "statestore.mutate" {
+		// Flat {store, mutation_id, kind, key, payload, named} lowers to
+		// {store, mutation_id, op: {kind, key_base64?, payload_base64?, named?}}.
+		body, ok := wireArgs(args).(map[string]any)
+		if !ok {
+			return 0, nil, fmt.Errorf("statestore.mutate args must be an object")
+		}
+		operation := map[string]any{}
+		kind, _ := body["kind"].(string)
+		if kind == "" {
+			return 0, nil, fmt.Errorf("statestore.mutate needs a `kind`")
+		}
+		operation["kind"] = kind
+		delete(body, "kind")
+		for _, name := range []string{"key_base64", "payload_base64", "named"} {
+			if value, present := body[name]; present {
+				operation[name] = value
+				delete(body, name)
+			}
+		}
+		body["op"] = operation
+		return wirePost(ctx, client, "/v1/state-stores/mutate", body)
+	}
+	method, path, ok := endpointFor(op)
+	if !ok {
+		return 0, nil, fmt.Errorf("unsupported op %v", op)
+	}
+	return wire(ctx, client, method, path, wireArgs(args))
+}
+
+// wireGet/wirePost issue a request and decode the reply body. Non-2xx
+// statuses still return the body — `expect` asserts error_status and
+// error_code against it.
+func wireGet(ctx context.Context, client *Client, path string) (int, any, error) {
+	return wire(ctx, client, "GET", path, nil)
+}
+
+func wirePost(ctx context.Context, client *Client, path string, body any) (int, any, error) {
+	return wire(ctx, client, "POST", path, body)
+}
+
+func wire(ctx context.Context, client *Client, method, path string, body any) (int, any, error) {
+	status, raw, err := client.transport.wireCall(ctx, method, path, body)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	var decoded any
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			return status, nil, fmt.Errorf("decode %s %s body: %w", method, path, err)
+		}
+	}
+	return status, decoded, nil
+}
+
+// wireCall is roundTrip with the status and raw body preserved on every
+// reply — conformance asserts error_status/error_code against error bodies
+// instead of mapping them onto typed errors.
+func (t *transport) wireCall(
+	ctx context.Context, method, path string, body any,
+) (int, json.RawMessage, error) {
+	var reader io.Reader
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			return 0, nil, fmt.Errorf("encode request: %w", err)
+		}
+		reader = bytes.NewReader(encoded)
+	}
+	request, err := http.NewRequestWithContext(
+		ctx, method, t.endpoint()+path, reader)
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+t.apiKey)
+	request.Header.Set("Accept", "application/json")
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	response, err := t.client.Do(request)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer response.Body.Close()
+	raw, err := io.ReadAll(response.Body)
+	if err != nil {
+		return 0, nil, err
+	}
+	return response.StatusCode, json.RawMessage(raw), nil
+}
+
+// -- arg lowering ---------------------------------------------------------
+
+// wireArgs lowers the fixture vocabulary onto the wire: raw key/payload/
+// after_key objects become *_base64, metadata becomes metadata_base64,
+// nanosecond numbers become decimal strings, and records[] entries
+// transform the same way.
+func wireArgs(args any) any {
+	object, _ := args.(map[string]any)
+	if object == nil {
+		return args
+	}
+	out := map[string]any{}
+	for key, value := range object {
+		out[key] = value
+	}
+	if records, ok := out["records"].([]any); ok {
+		lowered := make([]any, 0, len(records))
+		for _, record := range records {
+			if row, ok := record.(map[string]any); ok {
+				lowered = append(lowered, wireFields(row))
+			} else {
+				lowered = append(lowered, record)
+			}
+		}
+		out["records"] = lowered
+	}
+	return wireFields(out)
+}
+
+func wireFields(object map[string]any) map[string]any {
+	for _, pair := range [][2]string{
+		{"key", "key_base64"},
+		{"payload", "payload_base64"},
+		{"after_key", "after_key_base64"},
+	} {
+		if value, present := object[pair[0]]; present {
+			delete(object, pair[0])
+			object[pair[1]] = base64.StdEncoding.EncodeToString(rawBytes(value))
+		}
+	}
+	if metadata, present := object["metadata"]; present {
+		delete(object, "metadata")
+		encoded := map[string]any{}
+		if entries, ok := metadata.(map[string]any); ok {
+			for name, value := range entries {
+				encoded[name] = base64.StdEncoding.EncodeToString(rawBytes(value))
+			}
+		}
+		object["metadata_base64"] = encoded
+	}
+	for _, field := range []string{"event_time_ns", "after_event_time_ns", "timestamp_ns"} {
+		if number, ok := object[field]; ok {
+			switch typed := number.(type) {
+			case float64:
+				object[field] = strconv.FormatInt(int64(typed), 10)
+			}
+		}
+	}
+	return object
+}
+
+// rawBytes decodes {"utf8": ..} / {"hex": ..} / {"base64": ..} wrappers; a
+// plain string is already utf8 bytes.
+func rawBytes(value any) []byte {
+	switch typed := value.(type) {
+	case nil:
+		return nil
+	case string:
+		return []byte(typed)
+	case map[string]any:
+		if utf8, ok := typed["utf8"].(string); ok {
+			return []byte(utf8)
+		}
+		if hexText, ok := typed["hex"].(string); ok {
+			decoded, _ := hexDecode(hexText)
+			return decoded
+		}
+		if b64, ok := typed["base64"].(string); ok {
+			decoded, _ := base64.StdEncoding.DecodeString(b64)
+			return decoded
+		}
+	}
+	return nil
+}
+
+func hexDecode(text string) ([]byte, error) {
+	out := make([]byte, 0, len(text)/2)
+	for index := 0; index+1 < len(text); index += 2 {
+		value, err := strconv.ParseUint(text[index:index+2], 16, 8)
+		if err != nil {
+			return out, err
+		}
+		out = append(out, byte(value))
+	}
+	return out, nil
+}
+
+// -- expect ---------------------------------------------------------------
+
+// checkExpect evaluates one substituted expect map against (status, body);
+// empty string means satisfied, anything else is the failure message.
+func checkExpect(status int, body any, expect map[string]any, ctx *scenarioContext) string {
+	for path, expected := range expect {
+		switch path {
+		case "error_status":
+			want := int(int64Value(expected))
+			if status != want {
+				return fmt.Sprintf("expected status %d, got %d: %v", want, status, body)
+			}
+		case "error_code":
+			want, _ := expected.(string)
+			object, _ := body.(map[string]any)
+			got, _ := object["code"].(string)
+			if got != want {
+				return fmt.Sprintf("expected code %s, got body %v", want, body)
+			}
+		default:
+			actual := digPath(body, path)
+			if message := checkPath(path, expected, actual, body, ctx); message != "" {
+				return message
+			}
+		}
+	}
+	return ""
+}
+
+func checkPath(path string, expected, actual, body any, ctx *scenarioContext) string {
 	text, isText := expected.(string)
 	switch {
-	case isText && text == "!=null":
+	case isText && (text == "present" || text == "!=null"):
 		if actual == nil {
-			fail("expected non-null")
-		}
-	case isText && text == "present":
-		if actual == nil {
-			fail("expected present")
+			return fmt.Sprintf("%s absent in %v", path, body)
 		}
 	case isText && text == "absent":
 		if actual != nil {
-			fail("expected absent, got %v", actual)
-		}
-	case isText && strings.HasPrefix(text, "len>="):
-		bound, _ := strconv.Atoi(text[5:])
-		length := -1
-		switch value := actual.(type) {
-		case []any:
-			length = len(value)
-		case map[string]any:
-			length = len(value)
-		case string:
-			length = len(value)
-		}
-		if length < bound {
-			fail("expected len>=%d, got %d", bound, length)
+			return fmt.Sprintf("%s present: %v", path, actual)
 		}
 	case isText && strings.HasPrefix(text, "=="):
-		bound := digBound(ctx.bindings, text[2:])
-		if !looseEquals(bound, actual) {
-			fail("expected %s=%v, got %v", text, bound, actual)
+		want := digBound(ctx.bindings, text[2:])
+		if !looseEquals(want, actual) {
+			return fmt.Sprintf("%s = %v, expected %v (%s)", path, actual, want, text)
+		}
+	case isText && strings.HasPrefix(text, "len>="):
+		want, _ := strconv.Atoi(text[5:])
+		got := 0
+		switch value := actual.(type) {
+		case []any:
+			got = len(value)
+		case string:
+			got = len(value)
+		case map[string]any:
+			got = len(value)
+		}
+		if got < want {
+			return fmt.Sprintf("%s len %d < %d in %v", path, got, want, body)
 		}
 	default:
+		if document, ok := expected.(map[string]any); ok {
+			if nested, present := document["base64_json"].(map[string]any); present {
+				// Decode the actual base64 string as JSON, then apply each
+				// named expectation to the decoded document.
+				encoded, _ := actual.(string)
+				raw, err := base64.StdEncoding.DecodeString(encoded)
+				if err != nil {
+					return fmt.Sprintf("%s is not base64: %v", path, actual)
+				}
+				var decoded any
+				if err := json.Unmarshal(raw, &decoded); err != nil {
+					return fmt.Sprintf("%s is not base64 JSON: %v", path, actual)
+				}
+				if message := checkExpect(0, decoded, nested, ctx); message != "" {
+					return fmt.Sprintf("%s decoded: %s", path, message)
+				}
+				return ""
+			}
+		}
 		if !looseEquals(expected, actual) {
-			fail("expected %v, got %v", expected, actual)
+			return fmt.Sprintf("%s = %v, expected %v in %v", path, actual, expected, body)
 		}
 	}
+	return ""
 }
 
-// -- operations ---------------------------------------------------------
-
-func callOp(ctx context.Context, client *Client, step map[string]any) (any, error) {
-	args, _ := step["args"].(map[string]any)
-	switch step["op"] {
-	case "wcl":
-		execution, err := client.WCL(ctx, str(args, "script"))
-		if err != nil {
-			return nil, err
-		}
-		return bindExecution(execution), nil
-	case "admin.commands":
-		commands, _ := args["commands"].([]any)
-		typed := make([]map[string]any, 0, len(commands))
-		for _, command := range commands {
-			if object, ok := command.(map[string]any); ok {
-				typed = append(typed, object)
-			}
-		}
-		execution, err := client.Commands(ctx, typed)
-		if err != nil {
-			return nil, err
-		}
-		return bindExecution(execution), nil
-	case "feed.append":
-		record := FeedAppend{
-			RequestID:       str(args, "request_id"),
-			WriterSessionID: str(args, "writer_session_id"),
-			WriterEpoch:     int64Arg(args, "writer_epoch"),
-			Sequence:        int64Arg(args, "sequence"),
-			Key:             bytesArg(args["key"]),
-			Payload:         bytesArg(args["payload"]),
-			EventTimeNs:     int64PtrArg(args["event_time_ns"]),
-			Metadata:        metadataArg(args["metadata"]),
-		}
-		result, err := client.Feeds.UseCompression(args["use_compression"] == true).Append(ctx, str(args, "feed"), record)
-		if err != nil {
-			return nil, err
-		}
-		return bindAppendResult(result), nil
-	case "reader.temporary_fetch":
-		options := TemporaryFetchOptions{
-			After:            cursorPtr(str(args, "after")),
-			Limit:            int(int64Arg(args, "limit")),
-			NewOnly:          args["new_only"] == true,
-			Tail:             args["tail"] == true,
-			WaitMs:           int(int64Arg(args, "wait_ms")),
-			AfterEventTimeNs: int64PtrArg(args["after_event_time_ns"]),
-		}
-		page, err := client.Feeds.TemporaryFetch(ctx, str(args, "feed"), options)
-		if err != nil {
-			return nil, err
-		}
-		var records []any
-		for _, record := range page.Records {
-			records = append(records, bindRecord(record))
-		}
-		var nextCursor any
-		if page.NextCursor != nil {
-			nextCursor = string(*page.NextCursor)
-		}
-		return map[string]any{"records": records, "next_cursor": nextCursor}, nil
-	case "writer.append":
-		input := AppendInput{
-			RequestID:   str(args, "request_id"),
-			Key:         bytesArg(args["key"]),
-			Payload:     bytesArg(args["payload"]),
-			EventTimeNs: int64PtrArg(args["event_time_ns"]),
-			Metadata:    metadataArg(args["metadata"]),
-		}
-		writer := client.Writer(str(args, "writer"), int64Arg(args, "session_epoch")).UseCompression(args["use_compression"] == true)
-		result, err := writer.Append(ctx, input)
-		if err != nil {
-			return nil, err
-		}
-		return bindAppendResult(result), nil
-	case "writer.append_batch":
-		var inputs []AppendInput
-		var writer *WriterSessionClient
-		for _, recordRaw := range slice(args["records"]) {
-			record, _ := recordRaw.(map[string]any)
-			if writer == nil {
-				writer = client.Writer(
-					str(record, "writer"), int64Arg(record, "session_epoch"))
-			}
-			inputs = append(inputs, AppendInput{
-				RequestID:   str(record, "request_id"),
-				Key:         bytesArg(record["key"]),
-				Payload:     bytesArg(record["payload"]),
-				EventTimeNs: int64PtrArg(record["event_time_ns"]),
-				Metadata:    metadataArg(record["metadata"]),
-			})
-		}
-		result, err := writer.UseCompression(args["use_compression"] == true).AppendBatch(ctx, inputs)
-		if err != nil {
-			return nil, err
-		}
-		var results []any
-		for _, item := range result.Results {
-			results = append(results, bindAppendResult(item))
-		}
-		return map[string]any{
-			"results":  results,
-			"feedback": bindFeedback(result.Feedback),
-		}, nil
-	case "reader.open":
-		reader := client.Reader(str(args, "reader"))
-		capacity := 64
-		if raw, ok := args["capacity"].(float64); ok {
-			capacity = int(raw)
-		}
-		session, err := reader.Open(ctx, capacity)
-		if err != nil {
-			return nil, err
-		}
-		return bindSession(session), nil
-	case "reader.fetch", "reader.ack", "reader.close":
-		reader := client.Reader(str(args, "reader"))
-		session := ReaderSession{SessionEpoch: int64Arg(args, "session_epoch")}
-		switch step["op"] {
-		case "reader.fetch":
-			page, err := reader.Fetch(ctx, session, int(int64Arg(args, "limit")))
-			if err != nil {
-				return nil, err
-			}
-			return bindPage(page), nil
-		case "reader.ack":
-			acked, err := reader.Ack(ctx, session, Cursor(str(args, "cursor")))
-			if err != nil {
-				return nil, err
-			}
-			return bindSession(acked), nil
-		default:
-			closed, err := reader.Close(ctx, session)
-			if err != nil {
-				return nil, err
-			}
-			return bindSession(closed), nil
-		}
-	case "member.join":
-		joined, err := client.SubscriptionMember(str(args, "subscription")).
-			Join(ctx, str(args, "member_id"))
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{
-			"member_id":       joined.MemberID,
-			"member_epoch":    joined.MemberEpoch,
-			"ownership_epoch": joined.OwnershipEpoch,
-			"tick":            joined.Tick,
-		}, nil
-	case "member.claim", "member.renew":
-		member := client.SubscriptionMember(str(args, "subscription"))
-		joined := joinedArgs(args)
-		var lease WorkLease
-		var err error
-		if step["op"] == "member.claim" {
-			lease, err = member.Claim(ctx, joined, str(args, "work_id"),
-				int(int64Arg(args, "lease_ticks")))
-		} else {
-			lease, err = member.Renew(ctx, joined, leaseArgs(args),
-				int(int64Arg(args, "lease_ticks")))
-		}
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{"lease": bindLease(lease)}, nil
-	case "member.fetch":
-		member := client.SubscriptionMember(str(args, "subscription"))
-		page, err := member.Fetch(ctx, joinedArgs(args), leaseArgs(args),
-			int(int64Arg(args, "limit")))
-		if err != nil {
-			return nil, err
-		}
-		return bindMemberPage(page), nil
-	case "member.ack":
-		member := client.SubscriptionMember(str(args, "subscription"))
-		page := MemberPage{
-			Cursor:    cursorPtr(str(args, "cursor")),
-			Positions: positionsArg(args["positions"]),
-		}
-		if err := member.Ack(ctx, joinedArgs(args), leaseArgs(args), page); err != nil {
-			return nil, err
-		}
-		return map[string]any{}, nil
-	case "member.release":
-		member := client.SubscriptionMember(str(args, "subscription"))
-		if err := member.Release(ctx, joinedArgs(args), leaseArgs(args)); err != nil {
-			return nil, err
-		}
-		return map[string]any{}, nil
-	case "feed.records":
-		path := "/v1/feeds/records?feed=" + url.QueryEscape(str(args, "feed"))
-		if limit := int64Arg(args, "limit"); limit > 0 {
-			path += "&limit=" + strconv.FormatInt(limit, 10)
-		}
-		raw, err := client.transport.get(ctx, path)
-		if err != nil {
-			return nil, err
-		}
-		var decoded any
-		if err := json.Unmarshal(raw, &decoded); err != nil {
-			return nil, err
-		}
-		if object, ok := decoded.(map[string]any); ok {
-			return object, nil
-		}
-		return map[string]any{"records": decoded}, nil
-	default:
-		return nil, fmt.Errorf("unsupported op %v", step["op"])
-	}
-}
-
-// -- arg helpers --------------------------------------------------------
+// -- arg helpers ----------------------------------------------------------
 
 func str(object map[string]any, name string) string {
 	value, _ := object[name].(string)
 	return value
-}
-
-func slice(value any) []any {
-	array, _ := value.([]any)
-	return array
 }
 
 func int64Arg(object map[string]any, name string) int64 {
@@ -407,228 +605,13 @@ func int64Value(value any) int64 {
 		return parsed
 	case int64:
 		return typed
+	case int:
+		return int64(typed)
 	}
 	return 0
 }
 
-func int64PtrArg(value any) *int64 {
-	if value == nil {
-		return nil
-	}
-	parsed := int64Value(value)
-	return &parsed
-}
-
-func bytesArg(value any) []byte {
-	switch typed := value.(type) {
-	case nil:
-		return nil
-	case string:
-		decoded, _ := base64.StdEncoding.DecodeString(typed)
-		return decoded
-	case map[string]any:
-		if utf8, ok := typed["utf8"].(string); ok {
-			return []byte(utf8)
-		}
-		if hexText, ok := typed["hex"].(string); ok {
-			decoded, _ := hex.DecodeString(hexText)
-			return decoded
-		}
-		if b64, ok := typed["base64"].(string); ok {
-			decoded, _ := base64.StdEncoding.DecodeString(b64)
-			return decoded
-		}
-	}
-	return nil
-}
-
-func metadataArg(value any) map[string][]byte {
-	object, ok := value.(map[string]any)
-	if !ok {
-		return nil
-	}
-	metadata := map[string][]byte{}
-	for name, raw := range object {
-		metadata[name] = bytesArg(raw)
-	}
-	return metadata
-}
-
-func positionsArg(value any) map[string]string {
-	object, ok := value.(map[string]any)
-	if !ok {
-		return map[string]string{}
-	}
-	positions := map[string]string{}
-	for name, raw := range object {
-		if cursor, ok := raw.(string); ok {
-			positions[name] = cursor
-		}
-	}
-	return positions
-}
-
-func cursorPtr(value string) *Cursor {
-	if value == "" {
-		return nil
-	}
-	cursor := Cursor(value)
-	return &cursor
-}
-
-func joinedArgs(args map[string]any) Joined {
-	return Joined{
-		MemberID:    str(args, "member_id"),
-		MemberEpoch: int64Arg(args, "member_epoch"),
-	}
-}
-
-func leaseArgs(args map[string]any) WorkLease {
-	return WorkLease{
-		WorkID:      str(args, "work_id"),
-		MemberID:    str(args, "member_id"),
-		MemberEpoch: int64Arg(args, "member_epoch"),
-		LeaseEpoch:  int64Arg(args, "lease_epoch"),
-	}
-}
-
-// -- result -> wire-name bindings ---------------------------------------
-
-func bindFeedback(feedback ServerFeedback) map[string]any {
-	return map[string]any{
-		"recommended_batch_count": feedback.RecommendedBatchCount,
-		"recommended_batch_bytes": feedback.RecommendedBatchBytes,
-		"pressure":                feedback.Pressure,
-		"retry_after_ms":          feedback.RetryAfterMs,
-		"max_frame_bytes":         feedback.MaxFrameBytes,
-		"hot_key":                 feedback.HotKey,
-	}
-}
-
-func bindAppendResult(result AppendResult) map[string]any {
-	return map[string]any{
-		"message_id":   result.MessageID,
-		"cursor":       string(result.Cursor),
-		"deduplicated": result.Deduplicated,
-		"feedback":     bindFeedback(result.Feedback),
-	}
-}
-
-func bindSession(session ReaderSession) map[string]any {
-	var delivered, acknowledged any
-	if session.DeliveredCursor != nil {
-		delivered = string(*session.DeliveredCursor)
-	}
-	if session.AcknowledgedCursor != nil {
-		acknowledged = string(*session.AcknowledgedCursor)
-	}
-	return map[string]any{
-		"reader_id":           session.ReaderID,
-		"feed_id":             session.FeedID,
-		"session_epoch":       session.SessionEpoch,
-		"capacity":            session.Capacity,
-		"delivered_cursor":    delivered,
-		"acknowledged_cursor": acknowledged,
-	}
-}
-
-func bindRecord(record Record) map[string]any {
-	metadata := map[string]any{}
-	for name, value := range record.Metadata {
-		metadata[name] = base64.StdEncoding.EncodeToString(value)
-	}
-	var key any
-	if record.Key != nil {
-		key = base64.StdEncoding.EncodeToString(record.Key)
-	}
-	return map[string]any{
-		"cursor":          string(record.Cursor),
-		"message_id":      record.MessageID,
-		"producer_id":     record.ProducerID,
-		"sequence":        record.Sequence,
-		"event_time_ns":   strconv.FormatInt(record.EventTimeNs, 10),
-		"ingest_time_ns":  strconv.FormatInt(record.IngestTimeNs, 10),
-		"key_base64":      key,
-		"payload_base64":  base64.StdEncoding.EncodeToString(record.Payload),
-		"metadata_base64": metadata,
-	}
-}
-
-func bindPage(page ReaderPage) map[string]any {
-	var records []any
-	for _, record := range page.Records {
-		records = append(records, bindRecord(record))
-	}
-	var delivered, acknowledged any
-	if page.DeliveredCursor != nil {
-		delivered = string(*page.DeliveredCursor)
-	}
-	if page.AcknowledgedCursor != nil {
-		acknowledged = string(*page.AcknowledgedCursor)
-	}
-	return map[string]any{
-		"records":              records,
-		"delivered_cursor":     delivered,
-		"acknowledged_cursor":  acknowledged,
-		"recommended_capacity": page.RecommendedCapacity,
-		"retry_after_ms":       page.RetryAfterMs,
-	}
-}
-
-func bindLease(lease WorkLease) map[string]any {
-	return map[string]any{
-		"work_id":         lease.WorkID,
-		"member_id":       lease.MemberID,
-		"member_epoch":    lease.MemberEpoch,
-		"lease_epoch":     lease.LeaseEpoch,
-		"expires_at_tick": lease.ExpiresAtTick,
-	}
-}
-
-func bindMemberPage(page MemberPage) map[string]any {
-	var records []any
-	for _, record := range page.Records {
-		records = append(records, bindRecord(record))
-	}
-	var cursor any
-	if page.Cursor != nil {
-		cursor = string(*page.Cursor)
-	}
-	positions := map[string]any{}
-	for name, value := range page.Positions {
-		positions[name] = value
-	}
-	return map[string]any{
-		"records":         records,
-		"cursor":          cursor,
-		"positions":       positions,
-		"ownership_epoch": page.OwnershipEpoch,
-	}
-}
-
-func bindExecution(execution ControlExecution) map[string]any {
-	var results []any
-	for _, result := range execution.Results {
-		var data any
-		if len(result.Data) > 0 {
-			_ = json.Unmarshal(result.Data, &data)
-		}
-		results = append(results, map[string]any{
-			"statement": result.Statement,
-			"message":   result.Message,
-			"data":      data,
-		})
-	}
-	return map[string]any{
-		"request_id": execution.RequestID,
-		"revision":   execution.Revision,
-		"authority":  execution.Authority,
-		"warning":    execution.Warning,
-		"results":    results,
-	}
-}
-
-// -- substitution + comparison ------------------------------------------
+// -- substitution + comparison ---------------------------------------------
 
 func substitute(node any, ctx *scenarioContext) any {
 	switch typed := node.(type) {
@@ -645,34 +628,78 @@ func substitute(node any, ctx *scenarioContext) any {
 		}
 		return copy
 	case string:
-		if strings.HasPrefix(typed, "{{") && strings.HasSuffix(typed, "}}") {
-			return resolve(typed, ctx)
+		if strings.HasPrefix(typed, "{{") && strings.HasSuffix(typed, "}}") && !strings.Contains(typed[2:], "{{") {
+			if value, ok := resolve(typed, ctx); ok {
+				return value
+			}
+			return "null"
 		}
-		return strings.ReplaceAll(typed, "{{uniq}}", ctx.token)
+		return replaceTokens(typed, ctx)
 	default:
 		return node
 	}
 }
 
-func resolve(template string, ctx *scenarioContext) any {
-	inner := template[2 : len(template)-2]
+// replaceTokens substitutes {{...}} occurrences inside a longer string,
+// stringifying resolved values and emitting "null" for unresolvable ones.
+func replaceTokens(text string, ctx *scenarioContext) string {
+	var out strings.Builder
+	rest := text
+	for {
+		start := strings.Index(rest, "{{")
+		if start < 0 {
+			break
+		}
+		out.WriteString(rest[:start])
+		end := strings.Index(rest[start:], "}}")
+		if end < 0 {
+			out.WriteString(rest[start:])
+			return out.String()
+		}
+		end += start
+		token := rest[start : end+2]
+		if value, ok := resolve(token, ctx); ok {
+			out.WriteString(fmt.Sprint(value))
+		} else {
+			out.WriteString("null")
+		}
+		rest = rest[end+2:]
+	}
+	out.WriteString(rest)
+	return out.String()
+}
+
+func resolve(template string, ctx *scenarioContext) (any, bool) {
+	if !strings.HasPrefix(template, "{{") || !strings.HasSuffix(template, "}}") {
+		return nil, false
+	}
+	inner := strings.TrimSpace(template[2 : len(template)-2])
 	switch {
 	case inner == "uniq":
-		return ctx.token
+		return ctx.token, true
 	case inner == "uuid":
-		return newUUID()
+		return newUUID(), true
 	case strings.HasPrefix(inner, "uuid:"):
 		name := inner[5:]
 		if _, ok := ctx.namedIDs[name]; !ok {
 			ctx.namedIDs[name] = newUUID()
 		}
-		return ctx.namedIDs[name]
+		return ctx.namedIDs[name], true
+	case inner == "now_ns" || strings.HasPrefix(inner, "now_ns:"):
+		// Wall-clock epoch nanoseconds as a decimal string; an optional
+		// signed offset shifts the instant (e.g. {{now_ns:-250000000}}).
+		shift := int64(0)
+		if suffix := strings.TrimPrefix(inner, "now_ns"); strings.HasPrefix(suffix, ":") {
+			shift, _ = strconv.ParseInt(suffix[1:], 10, 64)
+		}
+		now := time.Now().UnixNano() + shift
+		return strconv.FormatInt(now, 10), true
 	default:
 		bound := digBound(ctx.bindings, inner)
 		if bound == nil {
-			panic(fmt.Sprintf("unresolved token %s", template))
+			return nil, false
 		}
-		return bound
+		return bound, true
 	}
 }
 
@@ -694,37 +721,82 @@ func digBound(bindings map[string]any, path string) any {
 	return digPath(current, path[dot+1:])
 }
 
-// digPath walks "a.b[0].c" against a result value.
+// digPath walks "a.b[0].c" — plus ["key"] quoted brackets for field names
+// that themselves contain dots — against a decoded JSON value.
 func digPath(root any, path string) any {
-	current := root
-	for _, segment := range strings.Split(path, ".") {
-		if current == nil {
+	for _, segment := range splitPath(path) {
+		if root == nil {
 			return nil
 		}
 		name := segment
-		index := -1
-		if strings.HasSuffix(segment, "]") {
-			if bracket := strings.Index(segment, "["); bracket >= 0 {
-				name = segment[:bracket]
-				index, _ = strconv.Atoi(segment[bracket+1 : len(segment)-1])
+		var indices []string
+		if bracket := strings.Index(segment, "["); bracket >= 0 {
+			name = segment[:bracket]
+			rest := segment[bracket:]
+			for len(rest) > 0 && strings.HasPrefix(rest, "[") {
+				close := strings.Index(rest, "]")
+				if close < 0 {
+					return nil
+				}
+				indices = append(indices, rest[1:close])
+				rest = rest[close+1:]
 			}
 		}
 		if name != "" {
-			object, ok := current.(map[string]any)
+			object, ok := root.(map[string]any)
 			if !ok {
 				return nil
 			}
-			current = object[name]
+			root = object[name]
 		}
-		if index >= 0 {
-			array, ok := current.([]any)
-			if !ok || index >= len(array) {
+		for _, index := range indices {
+			if quoted, ok := unquote(index); ok {
+				object, isObject := root.(map[string]any)
+				if !isObject {
+					return nil
+				}
+				root = object[quoted]
+				continue
+			}
+			position, err := strconv.Atoi(index)
+			array, isArray := root.([]any)
+			if err != nil || !isArray || position < 0 || position >= len(array) {
 				return nil
 			}
-			current = array[index]
+			root = array[position]
 		}
 	}
-	return current
+	return root
+}
+
+// splitPath splits on dots that are not inside ["..."] brackets.
+func splitPath(path string) []string {
+	var segments []string
+	depth := 0
+	start := 0
+	for index := 0; index < len(path); index++ {
+		switch path[index] {
+		case '[':
+			depth++
+		case ']':
+			if depth > 0 {
+				depth--
+			}
+		case '.':
+			if depth == 0 {
+				segments = append(segments, path[start:index])
+				start = index + 1
+			}
+		}
+	}
+	return append(segments, path[start:])
+}
+
+func unquote(token string) (string, bool) {
+	if len(token) >= 2 && strings.HasPrefix(token, `"`) && strings.HasSuffix(token, `"`) {
+		return token[1 : len(token)-1], true
+	}
+	return "", false
 }
 
 func looseEquals(expected, actual any) bool {

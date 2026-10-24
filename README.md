@@ -229,6 +229,26 @@ Managed Pipes and replicated Indexes share the same topology-free model
 — names, never partitions or Nodes:
 
 ```go
+// Pipe declaration: the client names the business key, source and
+// outputs — the server owns panes, leases and the effect journal.
+_, _ = client.DefineForwardPipe(ctx, "orders.relay", "orders-sub",
+    "orders.relayed")
+_, _ = client.DefineEnrichPipe(ctx, "orders.enrich", "orders-sub",
+    "orders.enriched", "crm.customers",
+    whitewater.EnrichOperation(whitewater.KeyExtractor(),
+        whitewater.EnrichOptions{Freshness: whitewater.EnrichLatest,
+            OnMiss: whitewater.EnrichMissQuarantine}),
+    "orders.enrich-dlq")
+_, _ = client.DefineWindowPipe(ctx, "orders.hourly", "orders-sub",
+    "stats.orders-hourly",
+    whitewater.WindowOperation(3_600_000_000_000, // window_ns: 1h
+        whitewater.KeyExtractor(), whitewater.CountAggregation(),
+        whitewater.WindowOptions{Time: whitewater.WindowEventTime,
+            WatermarkNs: 300_000_000_000, // 5m horizon
+            GraceNs:     30_000_000_000,  // 30s late revisions
+            ExpireNs:    7_200_000_000_000}),
+    "orders.hourly-emitted")
+
 // Pipe lifecycle: describe, pause, resume, drop.
 pipe := client.Pipe("orders.relay")
 info, _ := pipe.Describe(ctx)   // stage, operation, outputs, status
