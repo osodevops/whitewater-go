@@ -284,6 +284,22 @@ This SDK implements the versioned wire contract in
 decimal-string signed 64-bit nanoseconds, base64 binary fields, opaque
 cursors, UUID request ids, and the shared structured error codes.
 
+## Unit-test doubles
+
+`testkit.NewRiverbed(t)` serves the wire contract on a loopback
+`httptest.Server` — request-id dedupe, ack-gated redelivery, epoch
+fencing, modeled StateStores — so application tests exercise the real
+client.
+
+```go
+fake := testkit.NewRiverbed(t)
+defer fake.Close()
+client := fake.Client()
+```
+
+See `testkit/testkit_test.go` and the
+[testing guide](../whitewater/docs/guides/testing-your-app.md).
+
 ## Conformance
 
 The shared fixture corpus runs against a live three-Node Riverbed:
