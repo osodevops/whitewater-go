@@ -71,8 +71,8 @@ supplies the deduplicating `request_id` explicitly):
 exec, err := c.WCL(ctx, `
     CREATE DOMAIN shop;
     CREATE FEED shop.orders;
-    CREATE WRITER orders-writer TO shop.orders;
-    OPEN WRITER SESSION orders-writer;
+    CREATE WRITER orders.writer TO shop.orders;
+    OPEN WRITER SESSION orders.writer;
     CREATE READER audit FROM shop.orders START AT BEGINNING;
     SHOW FEEDS;
 `)
@@ -84,8 +84,8 @@ statement and calls `WCL` internally:
 ```go
 c.CreateDomain(ctx, "shop")                        // CREATE DOMAIN shop;
 c.CreateFeed(ctx, "shop.orders")                   // CREATE FEED shop.orders;
-c.CreateWriter(ctx, "orders-writer", "shop.orders")
-c.OpenWriterSession(ctx, "orders-writer")          // epoch comes back in .Data
+c.CreateWriter(ctx, "orders.writer", "shop.orders")
+c.OpenWriterSession(ctx, "orders.writer")          // epoch comes back in .Data
 c.CreateReader(ctx, "audit", "shop.orders", whitewater.StartBeginning())
 c.ListFeeds(ctx)                                   // SHOW FEEDS;
 c.SeekReader(ctx, "audit", whitewater.StartNow())  // SEEK READER ... TO NOW;

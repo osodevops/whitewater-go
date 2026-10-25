@@ -43,7 +43,7 @@ func main() {
 		func() error { _, err := client.CreateDomain(ctx, "demo"); return err },
 		func() error { _, err := client.CreateFeed(ctx, "demo.tail"); return err },
 		func() error {
-			_, err := client.CreateReader(ctx, "demo-reader", "demo.tail", whitewater.StartBeginning())
+			_, err := client.CreateReader(ctx, "demo.reader", "demo.tail", whitewater.StartBeginning())
 			return err
 		},
 	} {
@@ -52,7 +52,7 @@ func main() {
 		}
 	}
 
-	reader := client.Reader("demo-reader")
+	reader := client.Reader("demo.reader")
 
 	// Open fences this client as the session owner. Another client
 	// opening the same Reader supersedes this session (stale_epoch on

@@ -63,8 +63,7 @@ func StartTimestampNs(nanos int64) ReaderStart {
 }
 
 var (
-	dottedNameRe   = regexp.MustCompile(`^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*)*$`)
-	resourceNameRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{0,127}$`)
+	dottedNameRe = regexp.MustCompile(`^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*)*$`)
 )
 
 func dottedName(name string) (string, error) {
@@ -74,11 +73,10 @@ func dottedName(name string) (string, error) {
 	return name, nil
 }
 
+// Resource names (writers, readers, subscriptions, roles) share the same
+// dotted grammar the server validates for every resource kind.
 func resourceName(name string) (string, error) {
-	if !resourceNameRe.MatchString(name) {
-		return "", fmt.Errorf("invalid resource name: %q", name)
-	}
-	return name, nil
+	return dottedName(name)
 }
 
 // ---- Typed resource management ---------------------------------------------

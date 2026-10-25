@@ -84,6 +84,11 @@ func TestWclBuilders(t *testing.T) {
 	}
 	assertScript("CREATE SUBSCRIPTION team FROM orders.events START AT NOW")
 
+	if _, err := client.CreateSubscription(ctx, "orders.sub", "orders.events", StartBeginning()); err != nil {
+		t.Fatal(err)
+	}
+	assertScript("CREATE SUBSCRIPTION orders.sub FROM orders.events START AT BEGINNING")
+
 	if _, err := client.CreateRole(ctx, "ops"); err != nil {
 		t.Fatal(err)
 	}
@@ -145,6 +150,7 @@ func TestWclBuildersRejectInvalidNamesLocally(t *testing.T) {
 		func() error { _, err := client.CreateDomain(ctx, "two words"); return err },
 		func() error { _, err := client.CreateWriter(ctx, "bad;name", "orders.events"); return err },
 		func() error { _, err := client.CreateReader(ctx, "a'b", "orders.events", StartNow()); return err },
+		func() error { _, err := client.CreateSubscription(ctx, "orders-sub", "orders.events", StartNow()); return err },
 		func() error { _, err := client.RenameDomain(ctx, "orders", "INJECTION; DROP"); return err },
 	}
 	for i, call := range cases {

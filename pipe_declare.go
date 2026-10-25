@@ -379,17 +379,10 @@ func definePipeCommand(name, subscription string) (map[string]any, error) {
 	}, nil
 }
 
-// pipeSubscription accepts either name grammar: the typed builders mint
-// resourceName subscriptions while WCL scripts and other SDKs may
-// declare dotted ones.
+// pipeSubscription validates the Subscription reference on a Pipe
+// declaration — Subscription names share the dotted resource grammar.
 func pipeSubscription(name string) (string, error) {
-	if _, err := resourceName(name); err == nil {
-		return name, nil
-	}
-	if _, err := dottedName(name); err != nil {
-		return "", fmt.Errorf("invalid subscription name: %q", name)
-	}
-	return name, nil
+	return dottedName(name)
 }
 
 // DefineForwardPipe declares the copy Pipe — each delivered record

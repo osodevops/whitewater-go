@@ -203,7 +203,8 @@ count, _ := counters.GetOrDefault(ctx, bucket, 0)
 byte-level `client.StateStore(name)` facade remains for raw access.
 The facade is thin — rows live on the Nodes (RF3 + Fjall) and reads
 carry freshness evidence. See [docs/stores.md](docs/stores.md) for the
-full guide. When you only need the value, `Find` (primary) and `FindBy`
+full guide and [docs/pipes.md](docs/pipes.md) for managed stream jobs
+(forward/enrich/window) built on subscriptions and stores. When you only need the value, `Find` (primary) and `FindBy`
 (named key, first match) return `(V, bool, error)`; `GetOrDefault`
 collapses miss handling to one line: `client.Feeds.Load` remains the lighter one-shot history
 read into any `func([]Record) error` sink.

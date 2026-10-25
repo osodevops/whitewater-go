@@ -45,7 +45,7 @@ func main() {
 		func() error { _, err := client.CreateFeed(ctx, "pipedemo.updates.panes"); return err },
 		func() error {
 			_, err := client.CreateSubscription(
-				ctx, "pipedemo-updates", "pipedemo.updates", whitewater.StartBeginning())
+				ctx, "pipedemo.updates.sub", "pipedemo.updates", whitewater.StartBeginning())
 			return err
 		},
 		func() error {
@@ -56,6 +56,18 @@ func main() {
 			_, err = client.StateStores.Define(ctx, profiles, "")
 			return err
 		},
+		func() error {
+			// A window Pipe's output store must pre-declare non-unique
+			// 'key' and 'pane' named keys — pane rows post their group
+			// key and pane index under them so the view stays enumerable.
+			panes, err := whitewater.NewStateStore("pipedemo.minute.counts")
+			if err != nil {
+				return err
+			}
+			panes.AddKey("key", false).AddKey("pane", false)
+			_, err = client.StateStores.Define(ctx, panes, "")
+			return err
+		},
 	} {
 		if err := step(); err != nil {
 			log.Fatal(err)
@@ -64,7 +76,7 @@ func main() {
 
 	// 1. forward — the copy Pipe: subscription -> output Feed verbatim.
 	if _, err := client.DefineForwardPipe(
-		ctx, "pipedemo.relay", "pipedemo-updates", "pipedemo.updates.copy"); err != nil {
+		ctx, "pipedemo.relay", "pipedemo.updates.sub", "pipedemo.updates.copy"); err != nil {
 		log.Fatal(err)
 	}
 	fmt.Println("declared pipedemo.relay (forward)")
@@ -78,7 +90,7 @@ func main() {
 			OnMiss:    whitewater.EnrichMissQuarantine,
 		})
 	if _, err := client.DefineEnrichPipe(
-		ctx, "pipedemo.enrich", "pipedemo-updates", "pipedemo.updates.enriched",
+		ctx, "pipedemo.enrich", "pipedemo.updates.sub", "pipedemo.updates.enriched",
 		"pipedemo.profiles", enrich, "pipedemo.updates.dlq"); err != nil {
 		log.Fatal(err)
 	}
@@ -96,7 +108,7 @@ func main() {
 			ExpireNs:  uint64(time.Hour),
 		})
 	if _, err := client.DefineWindowPipe(
-		ctx, "pipedemo.minutecounts", "pipedemo-updates", "pipedemo.minute.counts",
+		ctx, "pipedemo.minutecounts", "pipedemo.updates.sub", "pipedemo.minute.counts",
 		window, "pipedemo.updates.panes"); err != nil {
 		log.Fatal(err)
 	}

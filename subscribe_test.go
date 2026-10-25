@@ -205,7 +205,7 @@ func TestSubscribeOpensDeliversAcksAndCloses(t *testing.T) {
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
 
 	delivered := make(chan []Record, 1)
-	sub := client.Subscribe(context.Background(), "hr-view", "hr.employees",
+	sub := client.Subscribe(context.Background(), "hr.view", "hr.employees",
 		StartBeginning(),
 		func(records []Record) error {
 			delivered <- records
