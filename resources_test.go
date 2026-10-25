@@ -150,7 +150,10 @@ func TestWclBuildersRejectInvalidNamesLocally(t *testing.T) {
 		func() error { _, err := client.CreateDomain(ctx, "two words"); return err },
 		func() error { _, err := client.CreateWriter(ctx, "bad;name", "orders.events"); return err },
 		func() error { _, err := client.CreateReader(ctx, "a'b", "orders.events", StartNow()); return err },
-		func() error { _, err := client.CreateSubscription(ctx, "orders-sub", "orders.events", StartNow()); return err },
+		func() error {
+			_, err := client.CreateSubscription(ctx, "orders-sub", "orders.events", StartNow())
+			return err
+		},
 		func() error { _, err := client.RenameDomain(ctx, "orders", "INJECTION; DROP"); return err },
 	}
 	for i, call := range cases {
