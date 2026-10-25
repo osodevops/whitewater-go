@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Pipe declaration: wire maps asserted verbatim — the tagged operation
@@ -77,7 +78,7 @@ func TestEnrichOperationWireFullOptions(t *testing.T) {
 }
 
 func TestWindowOperationWireDefaults(t *testing.T) {
-	op := WindowOperation(60_000_000_000, KeyExtractor(), CountAggregation())
+	op := WindowOperation(time.Minute, KeyExtractor(), CountAggregation())
 	wireJSON(t, op.wire(), `{
 		"operation": "window",
 		"key": {"kind": "key"},
@@ -89,17 +90,17 @@ func TestWindowOperationWireDefaults(t *testing.T) {
 
 func TestWindowOperationWireFullOptions(t *testing.T) {
 	op := WindowOperation(
-		60_000_000_000,
+		time.Minute,
 		MetadataExtractor("account"),
 		SumAggregation(JsonExtractor("amount")),
 		WindowOptions{
-			Time:        WindowIngestTime,
-			MaxLateNs:   5_000_000_000,
-			WatermarkNs: 6_000_000_000,
-			GraceNs:     7_000_000_000,
-			ExpireNs:    8_000_000_000,
-			KeyLimit:    900,
-			ByteLimit:   4096,
+			Time:      WindowIngestTime,
+			MaxLate:   5 * time.Second,
+			Watermark: 6 * time.Second,
+			Grace:     7 * time.Second,
+			Expire:    8 * time.Second,
+			KeyLimit:  900,
+			ByteLimit: 4096,
 		})
 	wireJSON(t, op.wire(), `{
 		"operation": "window",
@@ -200,10 +201,10 @@ func TestDefineWindowPipePostsWireShape(t *testing.T) {
 	client, _, bodies := operationsStub(t)
 	ctx := context.Background()
 	op := WindowOperation(
-		3_600_000_000_000,
+		time.Hour,
 		KeyExtractor(),
 		AverageAggregation(MetadataExtractor("latency")),
-		WindowOptions{MaxLateNs: 60_000_000_000})
+		WindowOptions{MaxLate: time.Minute})
 	if _, err := client.DefineWindowPipe(
 		ctx, "orders.hourly", "orders.sub", "orders.hourly.counts",
 		op, "orders.panes"); err != nil {
@@ -228,7 +229,7 @@ func TestDefineWindowPipePostsWireShape(t *testing.T) {
 	// Zero options leave every bound absent.
 	if _, err := client.DefineWindowPipe(
 		ctx, "orders.hourly2", "orders.sub", "orders.hourly.counts",
-		WindowOperation(1_000_000_000, KeyExtractor(), CountAggregation()), ""); err != nil {
+		WindowOperation(time.Second, KeyExtractor(), CountAggregation()), ""); err != nil {
 		t.Fatal(err)
 	}
 	second := lastCommand(t, bodies, 1)
@@ -253,7 +254,7 @@ func TestDefinePipeRejectsWrongOperationKind(t *testing.T) {
 	ctx := context.Background()
 	if _, err := client.DefineEnrichPipe(
 		ctx, "orders.enrich", "orders.sub", "orders.enriched",
-		"orders.profiles", WindowOperation(1, KeyExtractor(), CountAggregation()),
+		"orders.profiles", WindowOperation(time.Nanosecond, KeyExtractor(), CountAggregation()),
 		""); err == nil || !strings.Contains(err.Error(), "EnrichOperation") {
 		t.Fatalf("expected enrich-kind refusal, got %v", err)
 	}
@@ -275,13 +276,29 @@ func TestDefinePipeRejectsWrongOperationKind(t *testing.T) {
 	}
 }
 
-func TestDefineWindowRejectsZeroWindowNs(t *testing.T) {
+func TestDefineWindowRejectsNonPositiveWindow(t *testing.T) {
+	client, _, bodies := operationsStub(t)
+	for _, window := range []time.Duration{0, -time.Second} {
+		_, err := client.DefineWindowPipe(
+			context.Background(), "orders.hourly", "orders.sub", "orders.counts",
+			WindowOperation(window, KeyExtractor(), CountAggregation()), "")
+		if err == nil || !strings.Contains(err.Error(), "window") {
+			t.Fatalf("expected window refusal for %v, got %v", window, err)
+		}
+	}
+	if len(*bodies) != 0 {
+		t.Fatal("refused define must not reach the wire")
+	}
+}
+
+func TestDefineWindowRejectsNegativeBounds(t *testing.T) {
 	client, _, bodies := operationsStub(t)
 	_, err := client.DefineWindowPipe(
 		context.Background(), "orders.hourly", "orders.sub", "orders.counts",
-		WindowOperation(0, KeyExtractor(), CountAggregation()), "")
-	if err == nil || !strings.Contains(err.Error(), "windowNs") {
-		t.Fatalf("expected windowNs refusal, got %v", err)
+		WindowOperation(time.Hour, KeyExtractor(), CountAggregation(),
+			WindowOptions{Watermark: -time.Minute}), "")
+	if err == nil || !strings.Contains(err.Error(), "Watermark") {
+		t.Fatalf("expected Watermark refusal, got %v", err)
 	}
 	if len(*bodies) != 0 {
 		t.Fatal("refused define must not reach the wire")
@@ -306,7 +323,7 @@ func TestDefinePipeValidatesOperationsAndExtractors(t *testing.T) {
 	}
 	if _, err := client.DefineWindowPipe(
 		ctx, "orders.hourly", "orders.sub", "orders.counts",
-		WindowOperation(1, JsonExtractor(""), CountAggregation()), ""); err == nil ||
+		WindowOperation(time.Nanosecond, JsonExtractor(""), CountAggregation()), ""); err == nil ||
 		!strings.Contains(err.Error(), "json extractor") {
 		t.Fatalf("expected extractor refusal, got %v", err)
 	}
@@ -321,7 +338,7 @@ func TestDefinePipeValidatesOperationsAndExtractors(t *testing.T) {
 	// A sum/average aggregation without a value extractor is refused.
 	if _, err := client.DefineWindowPipe(
 		ctx, "orders.hourly", "orders.sub", "orders.counts",
-		WindowOperation(1, KeyExtractor(), WindowAggregation{}), ""); err == nil {
+		WindowOperation(time.Nanosecond, KeyExtractor(), WindowAggregation{}), ""); err == nil {
 		t.Fatal("expected an undeclared-aggregation refusal")
 	}
 }

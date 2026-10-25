@@ -242,12 +242,12 @@ _, _ = client.DefineEnrichPipe(ctx, "orders.enrich", "orders-sub",
     "orders.enrich-dlq")
 _, _ = client.DefineWindowPipe(ctx, "orders.hourly", "orders-sub",
     "stats.orders-hourly",
-    whitewater.WindowOperation(3_600_000_000_000, // window_ns: 1h
+    whitewater.WindowOperation(time.Hour, // 1h panes
         whitewater.KeyExtractor(), whitewater.CountAggregation(),
         whitewater.WindowOptions{Time: whitewater.WindowEventTime,
-            WatermarkNs: 300_000_000_000, // 5m horizon
-            GraceNs:     30_000_000_000,  // 30s late revisions
-            ExpireNs:    7_200_000_000_000}),
+            Watermark: 5 * time.Minute, // 5m horizon
+            Grace:     30 * time.Second, // 30s late revisions
+            Expire:    2 * time.Hour}),
     "orders.hourly-emitted")
 
 // Pipe lifecycle: describe, pause, resume, drop.

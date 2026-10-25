@@ -94,30 +94,31 @@ _, err = client.DefineWindowPipe(ctx,
     "orders.sub",
     "ops.order.counts", // pane store (declared above)
     whitewater.WindowOperation(
-        3_600_000_000_000, // windowNs: 1h
+        time.Hour, // 1h panes
         whitewater.JsonExtractor("$.region"),
         whitewater.SumAggregation(whitewater.JsonExtractor("$.total")),
         whitewater.WindowOptions{
-            Time:        whitewater.WindowEventTime, // or WindowIngestTime
-            WatermarkNs: 300_000_000_000,            // event-time close horizon
-            GraceNs:     60_000_000_000,             // revise emitted panes 1min
-            ExpireNs:    86_400_000_000_000,         // keep panes 24h
-            KeyLimit:    10_000,
+            Time:      whitewater.WindowEventTime, // or WindowIngestTime
+            Watermark: 5 * time.Minute,            // event-time close horizon
+            Grace:     time.Minute,                // revise emitted panes 1min
+            Expire:    24 * time.Hour,             // keep panes 24h
+            KeyLimit:  10_000,
         }),
     "ops.hourly.emits") // optional emit feed for closed panes
 ```
 
 ### Lateness models — pick exactly one
 
-- `MaxLateNs` — ingest-clock bound; later arrivals quarantine into a
+- `MaxLate` — ingest-clock bound; later arrivals quarantine into a
   countable `late` row.
-- `WatermarkNs` — event-time horizon `max(event_time) − watermarkNs`
+- `Watermark` — event-time horizon `max(event_time) − watermark`
   closes a pane once it passes the pane end (refused under
-  `WindowIngestTime`); `GraceNs` lets late events revise an emitted pane
+  `WindowIngestTime`); `Grace` lets late events revise an emitted pane
   before counting into `late`.
 
-An emit feed requires a declared lateness model. `WindowOptions` fields are
-`uint64` nanoseconds — the zero value means "unset".
+An emit feed requires a declared lateness model. `WindowOptions`
+durations are `time.Duration` — the zero value means "unset"; the SDK
+extracts nanoseconds internally for the wire.
 
 ### Aggregations
 

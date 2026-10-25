@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -143,13 +144,13 @@ type PipeOperation struct {
 	freshness   EnrichFreshness
 	named       string
 	onMiss      EnrichMiss
-	windowNs    uint64
+	windowNs    int64
 	aggregation WindowAggregation
 	time        WindowTime
-	maxLateNs   uint64
-	watermarkNs uint64
-	graceNs     uint64
-	expireNs    uint64
+	maxLateNs   int64
+	watermarkNs int64
+	graceNs     int64
+	expireNs    int64
 	keyLimit    uint64
 	byteLimit   uint64
 }
@@ -171,33 +172,35 @@ type EnrichOptions struct {
 // WindowOptions tunes WindowOperation; every field is optional and a
 // zero value is omitted from the wire — the server applies its own
 // defaults and enforces the cross-field rules (lateness-model
-// exclusivity, bound ordering) at define time.
+// exclusivity, bound ordering) at define time. Durations are
+// time.Duration values — the SDK extracts nanoseconds internally for
+// the wire.
 type WindowOptions struct {
 	// Time selects the pane clock; empty means WindowEventTime.
 	Time WindowTime
-	// MaxLateNs is the lateness bound under the event clock: a record
+	// MaxLate is the lateness bound under the event clock: a record
 	// arriving more than this far behind its own event_time_ns
 	// quarantines into a countable late row instead of a pane. Mutually
-	// exclusive with WatermarkNs — one lateness model per Pipe — and
+	// exclusive with Watermark — one lateness model per Pipe — and
 	// refused under WindowIngestTime.
-	MaxLateNs uint64
-	// WatermarkNs tracks a durable monotone horizon
-	// max(event_time) − watermark_ns per Pipe and closes a pane once
+	MaxLate time.Duration
+	// Watermark tracks a durable monotone horizon
+	// max(event_time) − watermark per Pipe and closes a pane once
 	// the horizon passes its end — close decisions follow event-time
 	// disorder rather than ingest-clock skew. Mutually exclusive with
-	// MaxLateNs; refused under WindowIngestTime.
-	WatermarkNs uint64
-	// GraceNs is the revision bound; it requires WatermarkNs. An event
+	// MaxLate; refused under WindowIngestTime.
+	Watermark time.Duration
+	// Grace is the revision bound; it requires Watermark. An event
 	// landing on an already-emitted pane while the horizon stays within
-	// pane_end + grace_ns revises the pane and re-emits under a bumped
+	// pane_end + grace revises the pane and re-emits under a bumped
 	// revision; past the grace bound the event counts into the late
-	// row. Without GraceNs every emitted-pane event quarantines.
-	GraceNs uint64
-	// ExpireNs bounds pane-row retention: a row deletes once
-	// pane_end + expire_ns is behind the close clock. Must exceed
-	// MaxLateNs or GraceNs when declared with them — a pane must
+	// row. Without Grace every emitted-pane event quarantines.
+	Grace time.Duration
+	// Expire bounds pane-row retention: a row deletes once
+	// pane_end + expire is behind the close clock. Must exceed
+	// MaxLate or Grace when declared with them — a pane must
 	// provably close before it may expire.
-	ExpireNs uint64
+	Expire time.Duration
 	// KeyLimit bounds distinct pane keys.
 	KeyLimit uint64
 	// ByteLimit bounds pane state bytes.
@@ -230,12 +233,14 @@ func EnrichOperation(key Extractor, options ...EnrichOptions) PipeOperation {
 }
 
 // WindowOperation accumulates each delivered record into fixed
-// windowNs-wide panes of a managed StateStore view. Panes are immutable
-// once written. windowNs must be positive and key/aggregation must be
-// declared — all validated at define time, where the error is returned
-// instead of a constructor panic.
+// window-wide panes of a managed StateStore view. Panes are immutable
+// once written. window is a time.Duration — time.Hour, 30*time.Second,
+// and friends — and must be positive; key/aggregation must be declared.
+// All validated at define time, where the error is returned instead of
+// a constructor panic. The SDK extracts nanoseconds internally for the
+// wire.
 func WindowOperation(
-	windowNs uint64,
+	window time.Duration,
 	key Extractor,
 	aggregation WindowAggregation,
 	options ...WindowOptions,
@@ -246,15 +251,15 @@ func WindowOperation(
 	op := PipeOperation{
 		operation:   "window",
 		key:         key,
-		windowNs:    windowNs,
+		windowNs:    int64(window),
 		aggregation: aggregation,
 	}
 	if len(options) == 1 {
 		op.time = options[0].Time
-		op.maxLateNs = options[0].MaxLateNs
-		op.watermarkNs = options[0].WatermarkNs
-		op.graceNs = options[0].GraceNs
-		op.expireNs = options[0].ExpireNs
+		op.maxLateNs = int64(options[0].MaxLate)
+		op.watermarkNs = int64(options[0].Watermark)
+		op.graceNs = int64(options[0].Grace)
+		op.expireNs = int64(options[0].Expire)
 		op.keyLimit = options[0].KeyLimit
 		op.byteLimit = options[0].ByteLimit
 	}
@@ -335,8 +340,22 @@ func (o PipeOperation) validate() error {
 		}
 		return nil
 	case "window":
-		if o.windowNs == 0 {
-			return fmt.Errorf("windowNs must be positive")
+		if o.windowNs <= 0 {
+			return fmt.Errorf("window must be a positive duration")
+		}
+		for _, bound := range []struct {
+			name string
+			ns   int64
+		}{
+			{"MaxLate", o.maxLateNs},
+			{"Watermark", o.watermarkNs},
+			{"Grace", o.graceNs},
+			{"Expire", o.expireNs},
+		} {
+			if bound.ns < 0 {
+				return fmt.Errorf(
+					"WindowOptions.%s must not be negative", bound.name)
+			}
 		}
 		if err := o.key.validate(); err != nil {
 			return fmt.Errorf("window key: %w", err)
@@ -450,7 +469,7 @@ func (c *Client) DefineEnrichPipe(
 // DefineWindowPipe declares rolling-window aggregation into a managed
 // StateStore view; op must be built by WindowOperation. outputStore is
 // the managed view name (dotted); emitFeed optionally emits closed
-// panes and requires the operation declare MaxLateNs — empty omits it.
+// panes and requires the operation declare MaxLate — empty omits it.
 func (c *Client) DefineWindowPipe(
 	ctx context.Context,
 	name, subscription, outputStore string,

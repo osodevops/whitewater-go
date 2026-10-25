@@ -99,13 +99,13 @@ func main() {
 	// 3. window — one-minute counts per record Key into the managed
 	//    pipedemo.minute.counts view; closed panes emit to a feed.
 	window := whitewater.WindowOperation(
-		uint64(time.Minute),
+		time.Minute,
 		whitewater.KeyExtractor(),
 		whitewater.CountAggregation(),
 		whitewater.WindowOptions{
-			Time:      whitewater.WindowEventTime,
-			MaxLateNs: uint64(30 * time.Second),
-			ExpireNs:  uint64(time.Hour),
+			Time:    whitewater.WindowEventTime,
+			MaxLate: 30 * time.Second,
+			Expire:  time.Hour,
 		})
 	if _, err := client.DefineWindowPipe(
 		ctx, "pipedemo.minutecounts", "pipedemo.updates.sub", "pipedemo.minute.counts",
