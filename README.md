@@ -339,6 +339,33 @@ server-side variants evolve without an SDK bump. `QueryIndex` values
 accept the same typed scalars as StateStore named values — floats are
 refused because the wire carries exact `i64`/`text`/`bytes`.
 
+## API surface
+
+Everything the SDK exposes, grouped by capability. The typed surface
+(`Domain` → `Feed` → writer/reader/consumer) covers the daily path;
+`Commands`, `WCL`, and the `*SessionClient` types are the explicit
+escape hatches for the same wire contract.
+
+| Area | API |
+|---|---|
+| Client & transport | `NewClient(apiKey, endpoints, timeout)` · `Healthy(ctx)` · `UseCompression` on feeds/writers |
+| Typed Domains | `Domain(name)` lazy / `GetDomain(ctx, name)` eager · `Name` `ID` `Revision` `Describe` `Refresh` · `Feeds` `FeedsMatching` `Readers` `Writers` `Subscriptions` `Pipes` `Indexes` `StateStores` · `Feed(relative)` `FeedForDomain[V]` `FeedOfDomain[K,V]` |
+| Schemas | `SetDomainSchema` `SetFeedSchema` `ClearDomainSchema` `ClearFeedSchema` · `Domain.Schema` `FeedSchema` `DeclaredFeedSchema` · `SchemaDecl`/`FeedSchema` — `json`, `jsonschema`, `avro`, `protobuf`, `text`, `bytes`, `custom.<name>` |
+| Feeds | `client.Feed(name)` `FeedOf[K,V]` `FeedFor[V]` `RebindFeed` → `Feed[K,V]` · `UseCompression` · `Records` `Fetch` `Load` · `Writer` `Append` `Reader` `Subscribe` `Consumer` |
+| Writing | `FeedWriter.Append(k, v)` `AppendEvent` `AppendAll` · `UseCompression` `SessionEpoch` · idempotent `request_id` per call · Metadata + event time via `FeedEvent` |
+| Reading | `FeedReader.Fetch(limit)` `Ack` `AckCursor` `Close` `SessionEpoch` · durable `ReaderID` · `ReaderStart` — `StartBeginning()` `StartNow()` `StartCursor(c)` `StartTimestampNs(ns)` |
+| Temporary fetches | `Feed.Fetch(opts)` / `FeedClient.TemporaryFetch` — `after_event_time_ns` seeks, `new_only`, `tail` + `wait_ms` long-poll · `Feed.Load(start, sink)` · `Feed.Records` |
+| Consumers | `feed.Consumer(reader)` → `FeedConsumer`: `StartAt` `Capacity` `Backoff` `OnError` `LastError` `Err` · `Messages` channel / `Run` / `Close` `Wait` `Done` |
+| Subscription members | `client.SubscriptionMember(sub)`: `Join` `Claim` `Renew` `Release` `Fetch` `Ack` — shared progress + RF3 work leases · `Feed.Subscribe` managed loop |
+| StateStores | `client.StateStore(name)` / `NewStateStore`: `AddKey` `NamedKeys` `Put` `Get` `GetBy` `Delete` `Page` `Iterate` `Clear` `Drop` · `client.StateStores.Define` `Drop` |
+| Indexes | `QueryIndex(name, IndexPredicate)` → `IndexPage` · `IndexExact` `IndexPrefix` `IndexRange` + `InclusiveBound` `ExclusiveBound` |
+| Pipes | `DefineForwardPipe` `DefineEnrichPipe` `DefineWindowPipe` · `Pipe(name)` → `Describe` `Pause` `Resume` `Drop` · `Pipes` · `ForwardOperation` `EnrichOperation` `WindowOperation` + `EnrichOptions` `WindowOptions` · `CountAggregation` `SumAggregation` `AverageAggregation` · durations are `time.Duration` |
+| Catalog lifecycle | `Create*` `Describe*` `Rename*` `Drop*` `List*` for Domain, Feed, Writer, Reader, Subscription, Role · `ListGrants` · `OpenWriterSession` `SeekReader` |
+| Observability | `DemandFeeds` `DemandReaders` `DemandSubscriptions` `DemandIndexes` `DemandPipes` → `DemandReport`/`DemandRow.Counter` · `HotKeys` → `HotKey.Feed` `ShareBps` `WindowRecords` `WindowBytes` |
+| Escape hatches | `WCL(ctx, script)` `WCLWithID` · `Commands(ctx, []map)` raw command batch · `Writer`/`Reader`/`SubscriptionMember` session clients |
+| Errors | `*Error` carries `Kind` + wire `code` · `IsRefused` `IsStaleSession` `IsAmbiguous` `IsConflict` `IsUnavailable` `IsLeaseConflict` |
+| Testing | HTTP-transport seam — stub `RoundTripper`/loopback `httptest` servers; see the repo's `*_test.go` fixtures |
+
 ## Contract parity
 
 This SDK implements the versioned wire contract in
