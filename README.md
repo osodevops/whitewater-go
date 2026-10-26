@@ -23,6 +23,43 @@ implementation details — cursors are opaque tokens, never parsed.
 
 ## Usage
 
+### Domains — the strongly-typed front door
+
+A Domain owns every Feed it prefixes (`shop` owns `shop.orders`), so the
+friendliest surface navigates domain → feed → reader/writer:
+
+```go
+shop, _ := client.Domain("shop")            // lazy handle — no I/O yet
+shop, _ := client.GetDomain(ctx, "shop")    // verifies + materializes now
+
+shop.Feeds(ctx)                             // [shop.orders shop.returns]
+shop.FeedsMatching(ctx, "order")            // prefix-filtered names
+shop.Readers(ctx); shop.Writers(ctx)
+shop.Subscriptions(ctx); shop.Pipes(ctx)
+shop.Indexes(ctx);    shop.StateStores(ctx)
+shop.Refresh(ctx)                           // re-pull the snapshot
+
+orders, _ := shop.Feed("orders")            // resolves "shop.orders" — no I/O
+typed,  _ := whitewater.FeedForDomain[Order](shop, "orders")
+
+reader, _ := whitewater.NewReaderBuilder(client, shop, orders).
+    ReaderID("fulfillment").                // durable identity — Kafka groupId
+    StartPoint(whitewater.StartBeginning()).// first-time start — auto.offset.reset
+    Capacity(256).
+    Open(ctx)                               // *FeedReader[string, []byte]
+
+writer, _ := whitewater.NewWriterBuilder(client, shop, orders).
+    WriterID("orders.ingest").
+    Open(ctx)                               // *FeedWriter[string, []byte]
+```
+
+The first catalog accessor issues **one batched control read**
+(`describe domain` + every `show` listing) joined by `space_id` /
+`feed_id` and cached. `ReaderID` is the progress identity — reopening
+the same name resumes the acknowledged frontier, and `StartPoint` only
+applies at first declaration (the `auto.offset.reset` mapping). A feed
+outside the Domain's prefix fails at `Open`/`Declare`.
+
 ### Typed feeds — the idiomatic path
 
 `Feed[K, V]` binds a feed to a key codec and a payload codec once;
