@@ -60,6 +60,30 @@ the same name resumes the acknowledged frontier, and `StartPoint` only
 applies at first declaration (the `auto.offset.reset` mapping). A feed
 outside the Domain's prefix fails at `Open`/`Declare`.
 
+### Record schemas
+
+Records stay schema-neutral bytes on the wire; a Feed can still declare
+schema metadata the catalog tracks for tooling, validation, and
+compatibility. The Domain's schema is the default every Feed inherits;
+a Feed's own declaration overrides the named sides:
+
+```go
+client.SetDomainSchema(ctx, "shop", &whitewater.FeedSchema{
+    Value: &whitewater.SchemaDecl{Format: "json", Subject: "order-v1"},
+})
+client.SetFeedSchema(ctx, "shop.orders", &whitewater.FeedSchema{
+    Key: &whitewater.SchemaDecl{Format: "text"},
+})
+
+schema, _   := shop.Schema(ctx)                       // the Domain default
+effective,_ := shop.FeedSchema(ctx, "shop.orders")    // key=text, value=json/order-v1
+declared, _ := shop.DeclaredFeedSchema(ctx, "shop.orders")
+client.ClearFeedSchema(ctx, "shop.orders")            // reverts to inheritance
+```
+
+Formats today: `text`, `json`, `protobuf`, `avro`, `custom.<name>`;
+compatibility enforcement is a no-op until the registry contract lands.
+
 ### Typed feeds — the idiomatic path
 
 `Feed[K, V]` binds a feed to a key codec and a payload codec once;

@@ -93,6 +93,61 @@ func (c *Client) CreateDomain(ctx context.Context, name string) (ControlExecutio
 	return c.WCL(ctx, "CREATE DOMAIN "+n)
 }
 
+// SetDomainSchema executes SET SCHEMA ON DOMAIN <domain> — declares
+// the record schema metadata every Feed in the Domain inherits.
+func (c *Client) SetDomainSchema(
+	ctx context.Context, domain string, schema *FeedSchema,
+) (ControlExecution, error) {
+	return c.setSchema(ctx, "domain", domain, schema)
+}
+
+// SetFeedSchema executes SET SCHEMA ON FEED <feed> — overrides the
+// Domain's declared schema for the named sides only.
+func (c *Client) SetFeedSchema(
+	ctx context.Context, feed string, schema *FeedSchema,
+) (ControlExecution, error) {
+	return c.setSchema(ctx, "feed", feed, schema)
+}
+
+// ClearDomainSchema executes DROP SCHEMA ON DOMAIN <domain>.
+func (c *Client) ClearDomainSchema(ctx context.Context, domain string) (ControlExecution, error) {
+	return c.clearSchema(ctx, "domain", domain)
+}
+
+// ClearFeedSchema executes DROP SCHEMA ON FEED <feed> — the Feed
+// reverts to inheriting its Domain's declared schema.
+func (c *Client) ClearFeedSchema(ctx context.Context, feed string) (ControlExecution, error) {
+	return c.clearSchema(ctx, "feed", feed)
+}
+
+func (c *Client) setSchema(
+	ctx context.Context, kind, name string, schema *FeedSchema,
+) (ControlExecution, error) {
+	dotted, err := dottedName(name)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	if schema == nil {
+		return ControlExecution{}, fmt.Errorf("schema is required")
+	}
+	return c.Commands(ctx, []map[string]any{{
+		"command": "set_schema",
+		"scope":   map[string]any{"kind": kind, "name": dotted},
+		"schema":  schema.wire(),
+	}})
+}
+
+func (c *Client) clearSchema(ctx context.Context, kind, name string) (ControlExecution, error) {
+	dotted, err := dottedName(name)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	return c.Commands(ctx, []map[string]any{{
+		"command": "clear_schema",
+		"scope":   map[string]any{"kind": kind, "name": dotted},
+	}})
+}
+
 // CreateFeed executes CREATE FEED <dotted.name>.
 func (c *Client) CreateFeed(ctx context.Context, name string) (ControlExecution, error) {
 	n, err := dottedName(name)

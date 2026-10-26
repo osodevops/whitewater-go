@@ -32,10 +32,14 @@ func TestDomain(t *testing.T) {
 			  "revision": 9,
 			  "authority": "control_plane",
 			  "results": [
-			    {"statement":"describe","message":"ok","data":{"space_id":"` + shopID + `","name":"shop","status":"active","created_at_ns":0,"history_policy":null}},
+			    {"statement":"describe","message":"ok","data":{"space_id":"` + shopID + `","name":"shop","status":"active","created_at_ns":0,"history_policy":null,"schema":{"value":{"format":"json","subject":"order-v1"}}}},
 			    {"statement":"show","message":"ok","data":[
-			      {"feed_id":"` + ordersFeedID + `","name":"shop.orders","space_id":"` + shopID + `","status":"active"},
-			      {"feed_id":"` + returnsFeedID + `","name":"shop.returns","space_id":"` + shopID + `","status":"active"},
+			      {"feed_id":"` + ordersFeedID + `","name":"shop.orders","space_id":"` + shopID + `","status":"active",
+			        "schema":{"key":{"format":"text"}},
+			        "effective_schema":{"key":{"format":"text"},"value":{"format":"json","subject":"order-v1"}}},
+			      {"feed_id":"` + returnsFeedID + `","name":"shop.returns","space_id":"` + shopID + `","status":"active",
+			        "schema":null,
+			        "effective_schema":{"value":{"format":"json","subject":"order-v1"}}},
 			      {"feed_id":"` + metricsFeedID + `","name":"other.metrics","space_id":"` + otherID + `","status":"active"}
 			    ]},
 			    {"statement":"show","message":"ok","data":[
@@ -106,6 +110,33 @@ func TestDomain(t *testing.T) {
 	if len(readers) != 1 || readers[0] != "shop.audit" {
 		t.Fatalf("readers = %v", readers)
 	}
+	domainSchema, err := domain.Schema(ctx)
+	if err != nil || domainSchema == nil || domainSchema.Value == nil ||
+		domainSchema.Value.Format != "json" ||
+		domainSchema.Value.Subject != "order-v1" {
+		t.Fatalf("domain schema = %+v, err = %v", domainSchema, err)
+	}
+	effective, err := domain.FeedSchema(ctx, "shop.orders")
+	if err != nil || effective == nil || effective.Key == nil ||
+		effective.Key.Format != "text" ||
+		effective.Value == nil || effective.Value.Format != "json" {
+		t.Fatalf("effective schema = %+v, err = %v", effective, err)
+	}
+	declared, err := domain.DeclaredFeedSchema(ctx, "shop.orders")
+	if err != nil || declared == nil || declared.Key == nil ||
+		declared.Value != nil {
+		t.Fatalf("declared schema = %+v, err = %v", declared, err)
+	}
+	inherited, err := domain.FeedSchema(ctx, "shop.returns")
+	if err != nil || inherited == nil || inherited.Value == nil ||
+		inherited.Key != nil {
+		t.Fatalf("inherited schema = %+v, err = %v", inherited, err)
+	}
+	undeclared, err := domain.FeedSchema(ctx, "other.metrics")
+	if err != nil || undeclared != nil {
+		t.Fatalf("outside schema = %+v, err = %v", undeclared, err)
+	}
+
 	writers, _ := domain.Writers(ctx)
 	if len(writers) != 1 || writers[0] != "shop.ingest" {
 		t.Fatalf("writers = %v", writers)

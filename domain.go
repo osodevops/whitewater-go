@@ -9,6 +9,71 @@ import (
 	"sync"
 )
 
+// SchemaDecl is one side of a Feed's schema metadata — format plus
+// optional subject/definition text. Formats: "text", "json",
+// "protobuf", "avro", "custom.<name>". Records stay schema-neutral
+// bytes on the wire; declarations are catalog metadata for tooling,
+// validation, and compatibility — not yet an enforced registry.
+type SchemaDecl struct {
+	Format     string
+	Subject    string
+	Definition string
+}
+
+func (d *SchemaDecl) wire() map[string]any {
+	out := map[string]any{"format": d.Format}
+	if d.Subject != "" {
+		out["subject"] = d.Subject
+	}
+	if d.Definition != "" {
+		out["definition"] = d.Definition
+	}
+	return out
+}
+
+func schemaDeclFrom(row map[string]any) *SchemaDecl {
+	if row == nil {
+		return nil
+	}
+	decl := &SchemaDecl{}
+	decl.Format, _ = row["format"].(string)
+	decl.Subject, _ = row["subject"].(string)
+	decl.Definition, _ = row["definition"].(string)
+	return decl
+}
+
+// FeedSchema is the declared key/value schema pair — either side may be
+// nil when undeclared. A Feed's declaration overrides the named sides
+// of its Domain's default.
+type FeedSchema struct {
+	Key   *SchemaDecl
+	Value *SchemaDecl
+}
+
+func (s *FeedSchema) wire() map[string]any {
+	out := map[string]any{}
+	if s != nil && s.Key != nil {
+		out["key"] = s.Key.wire()
+	}
+	if s != nil && s.Value != nil {
+		out["value"] = s.Value.wire()
+	}
+	return out
+}
+
+func feedSchemaFrom(raw any) *FeedSchema {
+	row, ok := raw.(map[string]any)
+	if !ok || row == nil {
+		return nil
+	}
+	key, _ := row["key"].(map[string]any)
+	value, _ := row["value"].(map[string]any)
+	if key == nil && value == nil {
+		return nil
+	}
+	return &FeedSchema{Key: schemaDeclFrom(key), Value: schemaDeclFrom(value)}
+}
+
 // Domain is a strongly-typed handle on one Domain — the administrative
 // namespace owning every Feed it prefixes (shop owns shop.orders).
 //
@@ -31,6 +96,9 @@ type domainSnapshot struct {
 	revision      int64
 	feeds         []string
 	feedIDs       map[string]bool
+	schema        *FeedSchema
+	feedSchemas   map[string]*FeedSchema // effective
+	declaredFeed  map[string]*FeedSchema // the Feed's own sides
 	readers       []string
 	writers       []string
 	subscriptions []string
@@ -93,7 +161,38 @@ func (d *Domain) Describe(ctx context.Context) (json.RawMessage, error) {
 	return snap.describe, nil
 }
 
-// Feeds lists every Feed name in this Domain, sorted.
+// Schema returns the Domain's declared schema default — nil when
+// undeclared. Every Feed without its own declaration inherits it.
+func (d *Domain) Schema(ctx context.Context) (*FeedSchema, error) {
+	snap, err := d.snapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return snap.schema, nil
+}
+
+// FeedSchema returns the effective schema for a Feed — the Feed's
+// declared sides layered over the Domain default. nil when nothing
+// is declared anywhere (schema-neutral bytes).
+func (d *Domain) FeedSchema(ctx context.Context, feed string) (*FeedSchema, error) {
+	snap, err := d.snapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return snap.feedSchemas[feed], nil
+}
+
+// DeclaredFeedSchema returns only the sides the Feed itself declares —
+// nil when it inherits the Domain default wholesale.
+func (d *Domain) DeclaredFeedSchema(ctx context.Context, feed string) (*FeedSchema, error) {
+	snap, err := d.snapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return snap.declaredFeed[feed], nil
+}
+
+// Feeds lists the Domain's Feed names
 func (d *Domain) Feeds(ctx context.Context) ([]string, error) {
 	return d.FeedsMatching(ctx, "")
 }
@@ -263,7 +362,8 @@ func (d *Domain) load(ctx context.Context) (*domainSnapshot, error) {
 	}
 
 	var describe struct {
-		SpaceID string `json:"space_id"`
+		SpaceID string          `json:"space_id"`
+		Schema  json.RawMessage `json:"schema"`
 	}
 	if err := json.Unmarshal(execution.Results[0].Data, &describe); err != nil {
 		return nil, fmt.Errorf("decode domain describe: %w", err)
@@ -273,23 +373,34 @@ func (d *Domain) load(ctx context.Context) (*domainSnapshot, error) {
 	}
 
 	var feedRows []struct {
-		Name    string `json:"name"`
-		FeedID  string `json:"feed_id"`
-		SpaceID string `json:"space_id"`
+		Name            string         `json:"name"`
+		FeedID          string         `json:"feed_id"`
+		SpaceID         string         `json:"space_id"`
+		Schema          map[string]any `json:"schema"`
+		EffectiveSchema map[string]any `json:"effective_schema"`
 	}
 	if err := json.Unmarshal(execution.Results[1].Data, &feedRows); err != nil {
 		return nil, fmt.Errorf("decode feeds listing: %w", err)
 	}
 	snap := &domainSnapshot{
-		domainID: describe.SpaceID,
-		describe: execution.Results[0].Data,
-		revision: execution.Revision,
-		feedIDs:  map[string]bool{},
+		domainID:     describe.SpaceID,
+		describe:     execution.Results[0].Data,
+		revision:     execution.Revision,
+		feedIDs:      map[string]bool{},
+		feedSchemas:  map[string]*FeedSchema{},
+		declaredFeed: map[string]*FeedSchema{},
 	}
+	var domainSchema map[string]any
+	if len(describe.Schema) > 0 && string(describe.Schema) != "null" {
+		_ = json.Unmarshal(describe.Schema, &domainSchema)
+	}
+	snap.schema = feedSchemaFrom(domainSchema)
 	for _, row := range feedRows {
 		if row.SpaceID == snap.domainID {
 			snap.feeds = append(snap.feeds, row.Name)
 			snap.feedIDs[row.FeedID] = true
+			snap.feedSchemas[row.Name] = feedSchemaFrom(row.EffectiveSchema)
+			snap.declaredFeed[row.Name] = feedSchemaFrom(row.Schema)
 		}
 	}
 	sort.Strings(snap.feeds)
