@@ -7,6 +7,8 @@ Zero dependencies: `net/http` transport, `context.Context` cancellation,
 `[]byte` keys/payloads/metadata, `int64` nanoseconds, opaque `Cursor`
 strings.
 
+A complete microservice walkthrough — provision, produce, pump-process, dead-letter, shutdown — lives in [`docs/demo-service.md`](docs/demo-service.md).
+
 ## Concepts
 
 Whitewater exposes `domain -> feed -> key -> cursor -> subscription`.
