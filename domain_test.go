@@ -204,3 +204,37 @@ func TestDomain(t *testing.T) {
 		t.Fatal("open without WriterID must fail")
 	}
 }
+
+// Domain.CreateFeed composes the Domain prefix into CREATE FEED.
+func TestDomainCreateFeed(t *testing.T) {
+	var script string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		if r.Method == "POST" && r.URL.Path == "/v1/admin/wcl" {
+			body, _ := io.ReadAll(r.Body)
+			var payload map[string]any
+			_ = json.Unmarshal(body, &payload)
+			script, _ = payload["script"].(string)
+			_, _ = w.Write([]byte(`{"request_id":"r1","revision":2,"authority":"control_plane","results":[{"statement":"create","message":"ok","data":{}}]}`))
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer server.Close()
+
+	client := NewClient("k", []string{server.URL}, 5*time.Second)
+	ctx := context.Background()
+	domain, err := client.Domain("shop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := domain.CreateFeed(ctx, "orders"); err != nil {
+		t.Fatal(err)
+	}
+	if script != "CREATE FEED shop.orders" {
+		t.Fatalf("script = %q", script)
+	}
+	if _, err := domain.CreateFeed(ctx, "BAD.NAME"); err == nil {
+		t.Fatal("malformed names must refuse locally")
+	}
+}

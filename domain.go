@@ -280,6 +280,17 @@ func (d *Domain) Refresh(ctx context.Context) error {
 	return nil
 }
 
+// CreateFeed executes CREATE FEED inside this Domain —
+// d.CreateFeed("orders") declares shop.orders. Refresh (or a lazy
+// accessor's first load) surfaces it through Feeds/FeedsMatching.
+func (d *Domain) CreateFeed(ctx context.Context, relative string) (ControlExecution, error) {
+	full, err := d.resolve(relative)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	return d.client.CreateFeed(ctx, full)
+}
+
 // Feed binds relative inside this Domain — d.Feed("orders") resolves
 // shop.orders. An already-qualified name ("shop.orders") is accepted
 // as-is. Pure name composition — no I/O.

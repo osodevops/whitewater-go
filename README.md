@@ -31,6 +31,7 @@ friendliest surface navigates domain → feed → reader/writer:
 ```go
 shop, _ := client.Domain("shop")            // lazy handle — no I/O yet
 shop, _ := client.GetDomain(ctx, "shop")    // verifies + materializes now
+shop.CreateFeed(ctx, "orders")          // CREATE FEED shop.orders;
 
 shop.Feeds(ctx)                             // [shop.orders shop.returns]
 shop.FeedsMatching(ctx, "order")            // prefix-filtered names
@@ -200,7 +201,8 @@ The raw `[]byte` API stays available for full control:
 // Provision a Domain, Feed, Writer, and session — either typed
 // (each method builds its WCL statement for you):
 _, err := client.CreateDomain(ctx, "shop")
-_, err = client.CreateFeed(ctx, "shop.orders")
+shop, _ = client.GetDomain(ctx, "shop")
+_, err = shop.CreateFeed(ctx, "orders")   // = CreateFeed(ctx, "shop.orders")
 _, err = client.CreateWriter(ctx, "orders-writer", "shop.orders")
 setup, err := client.OpenWriterSession(ctx, "orders-writer")
 // setup.Results[0].Data holds {"session_epoch": N}
@@ -349,7 +351,7 @@ escape hatches for the same wire contract.
 | Area | API |
 |---|---|
 | Client & transport | `NewClient(apiKey, endpoints, timeout)` · `Healthy(ctx)` · `UseCompression` on feeds/writers |
-| Typed Domains | `Domain(name)` lazy / `GetDomain(ctx, name)` eager · `Name` `ID` `Revision` `Describe` `Refresh` · `Feeds` `FeedsMatching` `Readers` `Writers` `Subscriptions` `Pipes` `Indexes` `StateStores` · `Feed(relative)` `FeedForDomain[V]` `FeedOfDomain[K,V]` |
+| Typed Domains | `Domain(name)` lazy / `GetDomain(ctx, name)` eager · `Name` `ID` `Revision` `Describe` `Refresh` · `Feeds` `FeedsMatching` `Readers` `Writers` `Subscriptions` `Pipes` `Indexes` `StateStores` · `Feed(relative)` `FeedForDomain[V]` `FeedOfDomain[K,V]` · `CreateFeed(relative)` |
 | Schemas | `SetDomainSchema` `SetFeedSchema` `ClearDomainSchema` `ClearFeedSchema` · `Domain.Schema` `FeedSchema` `DeclaredFeedSchema` · `SchemaDecl`/`FeedSchema` — `json`, `jsonschema`, `avro`, `protobuf`, `text`, `bytes`, `custom.<name>` |
 | Feeds | `client.Feed(name)` `FeedOf[K,V]` `FeedFor[V]` `RebindFeed` → `Feed[K,V]` · `UseCompression` · `Records` `Fetch` `Load` · `Writer` `Append` `Reader` `Subscribe` `Consumer` |
 | Writing | `FeedWriter.Append(k, v)` `AppendEvent` `AppendAll` · `UseCompression` `SessionEpoch` · idempotent `request_id` per call · Metadata + event time via `FeedEvent` |

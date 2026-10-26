@@ -83,10 +83,15 @@ statement and calls `WCL` internally:
 
 ```go
 c.CreateDomain(ctx, "shop")                        // CREATE DOMAIN shop;
-c.CreateFeed(ctx, "shop.orders")                   // CREATE FEED shop.orders;
+shop, _ := c.GetDomain(ctx, "shop")                // verifies + materializes
+shop.CreateFeed(ctx, "orders")                     // CREATE FEED shop.orders;
 c.CreateWriter(ctx, "orders.writer", "shop.orders")
 c.OpenWriterSession(ctx, "orders.writer")          // epoch comes back in .Data
-c.CreateReader(ctx, "audit", "shop.orders", whitewater.StartBeginning())
+c.CreateReader(ctx, "audit", "shop.orders", whitewater.StartBeginning())```
+
+`c.CreateFeed(ctx, "shop.orders")` with the fully-qualified name is the
+flat-name equivalent; `shop.CreateFeed(ctx, "orders")` composes the
+Domain prefix for you.
 c.ListFeeds(ctx)                                   // SHOW FEEDS;
 c.SeekReader(ctx, "audit", whitewater.StartNow())  // SEEK READER ... TO NOW;
 c.DropFeed(ctx, "shop.orders")                     // DROP FEED shop.orders;
