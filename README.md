@@ -43,15 +43,23 @@ shop.Refresh(ctx)                           // re-pull the snapshot
 orders, _ := shop.Feed("orders")            // resolves "shop.orders" — no I/O
 typed,  _ := whitewater.FeedForDomain[Order](shop, "orders")
 
-reader, _ := whitewater.NewReaderBuilder(client, shop, orders).
-    ReaderID("fulfillment").                // durable identity — Kafka groupId
-    StartPoint(whitewater.StartBeginning()).// first-time start — auto.offset.reset
+// Everything a service needs hangs off the Domain — relative names
+// resolve inside it:
+builder, _ := shop.CreateReader("orders")
+reader, _ := builder.ReaderID("fulfillment").  // durable identity — Kafka groupId
+    StartPoint(whitewater.StartBeginning()).   // first-time start — auto.offset.reset
     Capacity(256).
-    Open(ctx)                               // *FeedReader[string, []byte]
+    Open(ctx)                                // *FeedReader[string, []byte]
 
-writer, _ := whitewater.NewWriterBuilder(client, shop, orders).
-    WriterID("orders.ingest").
-    Open(ctx)                               // *FeedWriter[string, []byte]
+wbuilder, _ := shop.CreateWriter("orders")
+writer, _ := wbuilder.WriterID("orders.ingest").Open(ctx)
+
+// reader.ForEach pumps records one at a time — deliver, then ack each
+// page; return false or an error to stop with the page unacked:
+reader.ForEach(ctx, func(m whitewater.FeedMessage[string, []byte]) (bool, error) {
+    return handle(m) == nil, nil
+})
+// Typed feeds: NewReaderBuilder(client, shop, orders) takes *Feed[K,V].
 ```
 
 The first catalog accessor issues **one batched control read**
@@ -351,7 +359,7 @@ escape hatches for the same wire contract.
 | Area | API |
 |---|---|
 | Client & transport | `NewClient(apiKey, endpoints, timeout)` · `Healthy(ctx)` · `UseCompression` on feeds/writers |
-| Typed Domains | `Domain(name)` lazy / `GetDomain(ctx, name)` eager · `Name` `ID` `Revision` `Describe` `Refresh` · `Feeds` `FeedsMatching` `Readers` `Writers` `Subscriptions` `Pipes` `Indexes` `StateStores` · `Feed(relative)` `FeedForDomain[V]` `FeedOfDomain[K,V]` · `CreateFeed(relative)` |
+| Typed Domains | `Domain(name)` lazy / `GetDomain(ctx, name)` eager · `Name` `ID` `Revision` `Describe` `Refresh` · `Feeds` `FeedsMatching` `Readers` `Writers` `Subscriptions` `Pipes` `Indexes` `StateStores` · `Feed(relative)` `FeedForDomain[V]` `FeedOfDomain[K,V]` · `CreateFeed` `CreateReader` `CreateWriter` (relative) |
 | Schemas | `SetDomainSchema` `SetFeedSchema` `ClearDomainSchema` `ClearFeedSchema` · `Domain.Schema` `FeedSchema` `DeclaredFeedSchema` · `SchemaDecl`/`FeedSchema` — `json`, `jsonschema`, `avro`, `protobuf`, `text`, `bytes`, `custom.<name>` |
 | Feeds | `client.Feed(name)` `FeedOf[K,V]` `FeedFor[V]` `RebindFeed` → `Feed[K,V]` · `UseCompression` · `Records` `Fetch` `Load` · `Writer` `Append` `Reader` `Subscribe` `Consumer` |
 | Writing | `FeedWriter.Append(k, v)` `AppendEvent` `AppendAll` · `UseCompression` `SessionEpoch` · idempotent `request_id` per call · Metadata + event time via `FeedEvent` |

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // FeedMessage is one committed Feed record with its key and payload
@@ -203,6 +204,44 @@ func (r *FeedReader[K, V]) AckCursor(ctx context.Context, cursor Cursor) (Reader
 	}
 	r.session = session
 	return session, nil
+}
+
+// ForEach delivers every record to handler — one at a time — acking
+// each fetched page only after all its records have been handled. The
+// pump paces empty fetches on the server's retry_after_ms and returns
+// ctx.Err() on cancellation. A handler returning false or an error
+// exits WITHOUT acking the in-flight page so its tail replays —
+// at-least-once delivery, never acknowledge undelivered records.
+func (r *FeedReader[K, V]) ForEach(
+	ctx context.Context, handler func(FeedMessage[K, V]) (bool, error),
+) error {
+	for {
+		page, err := r.Fetch(ctx, 0)
+		if err != nil {
+			return err
+		}
+		if len(page.Records) == 0 {
+			wait := page.RetryAfterMs
+			if wait < 1 {
+				wait = 1
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(wait) * time.Millisecond):
+			}
+			continue
+		}
+		for _, message := range page.Records {
+			keep, err := handler(message)
+			if err != nil || !keep {
+				return err
+			}
+		}
+		if _, err := r.Ack(ctx); err != nil {
+			return err
+		}
+	}
 }
 
 // Close releases the session fence; durable acknowledged progress

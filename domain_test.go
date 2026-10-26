@@ -238,3 +238,65 @@ func TestDomainCreateFeed(t *testing.T) {
 		t.Fatal("malformed names must refuse locally")
 	}
 }
+
+// Domain.CreateReader/CreateWriter bind relative feeds inside the
+// Domain — the service shape hangs off the Domain handle — and
+// FeedReader.ForEach pumps records with correct ack ordering.
+func TestDomainScopedBuildersAndForEach(t *testing.T) {
+	stub := newConsumerStub()
+	stub.queuedPages = []string{
+		consumerPage("c1", "c1"),
+		consumerPage("c2", "c2"),
+	}
+	server := httptest.NewServer(stub.handler())
+	defer server.Close()
+
+	client := NewClient("k", []string{server.URL}, 5*time.Second)
+	ctx := context.Background()
+	shop, err := client.Domain("shop")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// WriterBuilder hangs off the Domain and issues CREATE WRITER on
+	// the resolved feed name.
+	wbuilder, err := shop.CreateWriter("orders")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wbuilder.WriterID("ingest").Declare(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	rbuilder, err := shop.CreateReader("orders")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := rbuilder.ReaderID("fulfillment").StartPoint(StartBeginning()).Capacity(1).Open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var seen []string
+	err = reader.ForEach(ctx, func(m FeedMessage[string, []byte]) (bool, error) {
+		seen = append(seen, *m.Key)
+		return len(seen) < 2, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("delivered %d records, want 2", len(seen))
+	}
+	if stub.count("/v1/readers/ack") != 1 {
+		t.Fatalf("acks = %d — page 2 must stay unacked so it replays", stub.count("/v1/readers/ack"))
+	}
+
+	// Malformed names refuse before any builder work.
+	if _, err := shop.CreateReader("BAD.NAME"); err == nil {
+		t.Fatal("malformed names must refuse")
+	}
+	if _, err := shop.CreateWriter("BAD.NAME"); err == nil {
+		t.Fatal("malformed names must refuse")
+	}
+}

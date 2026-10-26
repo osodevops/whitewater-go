@@ -291,6 +291,34 @@ func (d *Domain) CreateFeed(ctx context.Context, relative string) (ControlExecut
 	return d.client.CreateFeed(ctx, full)
 }
 
+// CreateReader starts a fluent Reader declaration on relative inside
+// this Domain — d.CreateReader("orders") binds shop.orders:
+//
+//	reader, err := shop.CreateReader("orders")
+//	reader, err = reader.ReaderID("fulfillment").   // the Kafka groupId analogue
+//		StartPoint(StartBeginning()).
+//		Open(ctx)
+//
+// Typed feeds use NewReaderBuilder(client, domain, feed) directly.
+func (d *Domain) CreateReader(relative string) (*ReaderBuilder[string, []byte], error) {
+	feed, err := d.Feed(relative)
+	if err != nil {
+		return nil, err
+	}
+	return NewReaderBuilder(d.client, d, feed), nil
+}
+
+// CreateWriter starts a fluent Writer declaration on relative inside
+// this Domain — d.CreateWriter("orders") binds shop.orders. Typed
+// feeds use NewWriterBuilder(client, domain, feed) directly.
+func (d *Domain) CreateWriter(relative string) (*WriterBuilder[string, []byte], error) {
+	feed, err := d.Feed(relative)
+	if err != nil {
+		return nil, err
+	}
+	return NewWriterBuilder(d.client, d, feed), nil
+}
+
 // Feed binds relative inside this Domain — d.Feed("orders") resolves
 // shop.orders. An already-qualified name ("shop.orders") is accepted
 // as-is. Pure name composition — no I/O.
