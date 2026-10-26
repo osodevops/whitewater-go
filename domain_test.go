@@ -278,7 +278,7 @@ func TestDomainScopedBuildersAndForEach(t *testing.T) {
 	}
 
 	var seen []string
-	err = reader.ForEach(ctx, func(m FeedMessage[string, []byte]) (bool, error) {
+	err = reader.ForEach(ctx, func(m FeedMessage[string, string]) (bool, error) {
 		seen = append(seen, *m.Key)
 		return len(seen) < 2, nil
 	})

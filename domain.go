@@ -300,7 +300,7 @@ func (d *Domain) CreateFeed(ctx context.Context, relative string) (ControlExecut
 //		Open(ctx)
 //
 // Typed feeds use NewReaderBuilder(client, domain, feed) directly.
-func (d *Domain) CreateReader(relative string) (*ReaderBuilder[string, []byte], error) {
+func (d *Domain) CreateReader(relative string) (*ReaderBuilder[string, string], error) {
 	feed, err := d.Feed(relative)
 	if err != nil {
 		return nil, err
@@ -311,7 +311,7 @@ func (d *Domain) CreateReader(relative string) (*ReaderBuilder[string, []byte], 
 // CreateWriter starts a fluent Writer declaration on relative inside
 // this Domain — d.CreateWriter("orders") binds shop.orders. Typed
 // feeds use NewWriterBuilder(client, domain, feed) directly.
-func (d *Domain) CreateWriter(relative string) (*WriterBuilder[string, []byte], error) {
+func (d *Domain) CreateWriter(relative string) (*WriterBuilder[string, string], error) {
 	feed, err := d.Feed(relative)
 	if err != nil {
 		return nil, err
@@ -322,8 +322,8 @@ func (d *Domain) CreateWriter(relative string) (*WriterBuilder[string, []byte], 
 // Feed binds relative inside this Domain — d.Feed("orders") resolves
 // shop.orders. An already-qualified name ("shop.orders") is accepted
 // as-is. Pure name composition — no I/O.
-func (d *Domain) Feed(relative string) (*Feed[string, []byte], error) {
-	return FeedOfDomain(d, relative, StringCodec(), BytesCodec())
+func (d *Domain) Feed(relative string) (*Feed[string, string], error) {
+	return FeedOfDomain(d, relative, StringCodec(), StringCodec())
 }
 
 // FeedForDomain binds a Feed inside domain with a typed payload Codec —

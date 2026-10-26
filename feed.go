@@ -299,8 +299,8 @@ func FeedFor[V any](client *Client, name string) (*Feed[string, V], error) {
 
 // Feed binds the default facade: string keys + raw byte payloads —
 // the escape hatch to wire bytes.
-func (c *Client) Feed(name string) (*Feed[string, []byte], error) {
-	return FeedOf(c, name, StringCodec(), BytesCodec())
+func (c *Client) Feed(name string) (*Feed[string, string], error) {
+	return FeedOf(c, name, StringCodec(), StringCodec())
 }
 
 // Name is the Feed's dotted name.

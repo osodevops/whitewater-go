@@ -44,9 +44,9 @@ func main() {
 	filtered, _ := shop.FeedsMatching(ctx, "ord")
 	fmt.Println("filtered:", filtered)
 
-	// FeedForDomain[string] binds UTF-8 payloads on the Feed handle —
-	// the SDK serializes, no []byte(...) casts in app code.
-	orders, err := whitewater.FeedForDomain[string](shop, "orders")
+	// The default Feed is already UTF-8 strings — no codec binding or
+	// []byte(...) casts for plain payloads; FeedForDomain[T] rebinds.
+	orders, err := shop.Feed("orders")
 	if err != nil {
 		log.Fatal(err)
 	}

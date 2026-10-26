@@ -48,11 +48,11 @@ func main() {
 	}
 
 	// ---- produce (usually a different service) -----------------------
-	// Bind codecs on the Feed handle — the SDK serializes, no []byte
-	// casts in app code.
-	orders, _ := whitewater.FeedForDomain[string](shop, "orders")
-	wbuilder, _ := shop.CreateWriter("orders")
-	writer, err := wbuilder.WriterID("orders.ingest").Open(ctx)
+	// The default Feed binds UTF-8 strings — the SDK serializes, no
+	// []byte casts or codec binding needed for plain JSON.
+	writer, err := shop.CreateWriter("orders").
+		WriterID("orders.ingest").
+		Open(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -61,13 +61,16 @@ func main() {
 	}
 
 	// ---- consume -----------------------------------------------------
-	dlq, _ := whitewater.FeedForDomain[string](shop, "orders.dlq")
-	dbuilder, _ := shop.CreateWriter("orders.dlq")
-	deadLetter, err := dbuilder.WriterID("fulfillment.dlq").Open(ctx)
+	deadLetter, err := shop.CreateWriter("orders.dlq").
+		WriterID("fulfillment.dlq").
+		Open(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
-	rbuilder := whitewater.NewReaderBuilder(client, shop, orders)
+	rbuilder, err := shop.CreateReader("orders")
+	if err != nil {
+		log.Fatal(err)
+	}
 	reader, err := rbuilder.
 		ReaderID("fulfillment").               // durable id — survives restarts
 		StartPoint(whitewater.StartBeginning()). // first-declare only

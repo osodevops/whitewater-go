@@ -42,7 +42,7 @@ shop.Subscriptions(ctx); shop.Pipes(ctx)
 shop.Indexes(ctx);    shop.StateStores(ctx)
 shop.Refresh(ctx)                           // re-pull the snapshot
 
-orders, _ := shop.Feed("orders")            // resolves "shop.orders" — no I/O
+orders, _ := shop.Feed("orders")            // Feed[string, string] — UTF-8 by default
 typed,  _ := whitewater.FeedForDomain[Order](shop, "orders")
 
 // Everything a service needs hangs off the Domain — relative names
@@ -51,14 +51,14 @@ builder, _ := shop.CreateReader("orders")
 reader, _ := builder.ReaderID("fulfillment").  // durable identity — Kafka groupId
     StartPoint(whitewater.StartBeginning()).   // first-time start — auto.offset.reset
     MaxPageSize(256).
-    Open(ctx)                                // *FeedReader[string, []byte]
+    Open(ctx)                                // *FeedReader[string, string]
 
 wbuilder, _ := shop.CreateWriter("orders")
 writer, _ := wbuilder.WriterID("orders.ingest").Open(ctx)
 
 // reader.ForEach pumps records one at a time — deliver, then ack each
 // page; return false or an error to stop with the page unacked:
-reader.ForEach(ctx, func(m whitewater.FeedMessage[string, []byte]) (bool, error) {
+reader.ForEach(ctx, func(m whitewater.FeedMessage[string, string]) (bool, error) {
     return handle(m) == nil, nil
 })
 // Typed feeds: NewReaderBuilder(client, shop, orders) takes *Feed[K,V].
@@ -164,8 +164,9 @@ users, _ := whitewater.FeedOf(client, "app.users", whitewater.StringCodec(), pro
 raw := whitewater.RebindFeed(users, whitewater.StringCodec(), whitewater.BytesCodec())
 ```
 
-`client.Feed(name)` returns the default `Feed[string, []byte]` — string
-keys and untouched payload bytes, the escape hatch to the wire.
+`client.Feed(name)` returns the default `Feed[string, string]` — UTF-8
+strings both ways, so un-schema-backed JSON flows with zero binding.
+`RebindFeed`/`FeedOf` with `BytesCodec()` is the escape hatch to raw bytes.
 
 ### Permanent consumers — the Kafka loop without the plumbing
 

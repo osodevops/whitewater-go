@@ -17,7 +17,7 @@ import (
 
 func newFeed(
 	t *testing.T, client *whitewater.Client, name string,
-) *whitewater.Feed[string, []byte] {
+) *whitewater.Feed[string, string] {
 	t.Helper()
 	if _, err := client.CreateFeed(context.Background(), name); err != nil {
 		t.Fatalf("CreateFeed: %v", err)
@@ -42,10 +42,10 @@ func TestAppendFetchAckNoRedelivery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Writer: %v", err)
 	}
-	if _, err := writer.Append(ctx, "order-1", []byte("created")); err != nil {
+	if _, err := writer.Append(ctx, "order-1", "created"); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
-	if _, err := writer.Append(ctx, "order-2", []byte("paid")); err != nil {
+	if _, err := writer.Append(ctx, "order-2", "paid"); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 
@@ -78,7 +78,7 @@ func TestAppendFetchAckNoRedelivery(t *testing.T) {
 		t.Fatalf("Reader reopen: %v", err)
 	}
 	defer reopened.Close(ctx)
-	if _, err := writer.Append(ctx, "order-3", []byte("shipped")); err != nil {
+	if _, err := writer.Append(ctx, "order-3", "shipped"); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	page, err = reopened.Fetch(ctx, 0)
@@ -103,7 +103,7 @@ func TestUnackedCloseRedelivers(t *testing.T) {
 		t.Fatalf("Writer: %v", err)
 	}
 	for _, key := range []string{"order-1", "order-2"} {
-		if _, err := writer.Append(ctx, key, []byte("v")); err != nil {
+		if _, err := writer.Append(ctx, key, "v"); err != nil {
 			t.Fatalf("Append: %v", err)
 		}
 	}
@@ -148,8 +148,8 @@ func TestAppendDeduplicatesByRequestID(t *testing.T) {
 		t.Fatalf("Writer: %v", err)
 	}
 	key := "order-1"
-	event := whitewater.FeedEvent[string, []byte]{
-		RequestID: "stable-request-1", Key: &key, Value: []byte("created"),
+	event := whitewater.FeedEvent[string, string]{
+		RequestID: "stable-request-1", Key: &key, Value: "created",
 	}
 	first, err := writer.AppendEvent(ctx, event)
 	if err != nil {
@@ -165,7 +165,7 @@ func TestAppendDeduplicatesByRequestID(t *testing.T) {
 	}
 
 	// Same request_id, different payload: the wire reports a conflict.
-	event.Value = []byte("forged")
+	event.Value = "forged"
 	if _, err := writer.AppendEvent(ctx, event); err == nil ||
 		!whitewater.IsConflict(err) {
 		t.Fatalf("tampered retry err = %v, want conflict", err)
@@ -194,7 +194,7 @@ func TestStaleWriterEpochRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Writer: %v", err)
 	}
-	if _, err := stale.Append(ctx, "order-1", []byte("v1")); err != nil {
+	if _, err := stale.Append(ctx, "order-1", "v1"); err != nil {
 		t.Fatalf("Append on live epoch: %v", err)
 	}
 	current, err := feed.Writer(ctx, "ingest") // reopens; bumps the epoch
@@ -204,11 +204,11 @@ func TestStaleWriterEpochRefused(t *testing.T) {
 	if current.SessionEpoch() == stale.SessionEpoch() {
 		t.Fatal("reopen must mint a new session epoch")
 	}
-	if _, err := stale.Append(ctx, "order-2", []byte("v2")); err == nil ||
+	if _, err := stale.Append(ctx, "order-2", "v2"); err == nil ||
 		!whitewater.IsStaleSession(err) {
 		t.Fatalf("stale append err = %v, want KindStaleSession", err)
 	}
-	if _, err := current.Append(ctx, "order-2", []byte("v2")); err != nil {
+	if _, err := current.Append(ctx, "order-2", "v2"); err != nil {
 		t.Fatalf("Append on current epoch: %v", err)
 	}
 }
@@ -309,7 +309,7 @@ func TestFeedRecordsAndTemporaryFetch(t *testing.T) {
 		t.Fatalf("Writer: %v", err)
 	}
 	for _, key := range []string{"order-1", "order-2", "order-3"} {
-		if _, err := writer.Append(ctx, key, []byte("v")); err != nil {
+		if _, err := writer.Append(ctx, key, "v"); err != nil {
 			t.Fatalf("Append: %v", err)
 		}
 	}
