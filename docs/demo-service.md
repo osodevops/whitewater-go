@@ -48,22 +48,26 @@ func main() {
 	}
 
 	// ---- produce (usually a different service) -----------------------
+	// Bind codecs on the Feed handle — the SDK serializes, no []byte
+	// casts in app code.
+	orders, _ := whitewater.FeedForDomain[string](shop, "orders")
 	wbuilder, _ := shop.CreateWriter("orders")
 	writer, err := wbuilder.WriterID("orders.ingest").Open(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
-	if _, err := writer.Append(ctx, "order-1", []byte(`{"total":42}`)); err != nil {
+	if _, err := writer.Append(ctx, "order-1", `{"total":42}`); err != nil {
 		log.Fatal(err)
 	}
 
 	// ---- consume -----------------------------------------------------
+	dlq, _ := whitewater.FeedForDomain[string](shop, "orders.dlq")
 	dbuilder, _ := shop.CreateWriter("orders.dlq")
 	deadLetter, err := dbuilder.WriterID("fulfillment.dlq").Open(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
-	rbuilder, _ := shop.CreateReader("orders")
+	rbuilder := whitewater.NewReaderBuilder(client, shop, orders)
 	reader, err := rbuilder.
 		ReaderID("fulfillment").               // durable id — survives restarts
 		StartPoint(whitewater.StartBeginning()). // first-declare only
@@ -76,7 +80,7 @@ func main() {
 
 	// The goroutine IS the hidden thread — ForEach blocks it alone.
 	go func() {
-		err := reader.ForEach(ctx, func(m whitewater.FeedMessage[string, []byte]) (bool, error) {
+		err := reader.ForEach(ctx, func(m whitewater.FeedMessage[string, string]) (bool, error) {
 			err := ordersDB.Upsert(orderID(m), order(m)) // idempotent side effect
 			switch {
 			case err == nil:
@@ -87,6 +91,7 @@ func main() {
 					key = *m.Key
 				}
 				deadLetter.Append(ctx, key, m.Value)    // quarantine → continue → acked
+				// (m.Value is decoded — a plain string on the typed feed)
 				return true, nil
 			default:
 				return false, err                        // transient → stop → replay

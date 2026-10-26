@@ -44,7 +44,9 @@ func main() {
 	filtered, _ := shop.FeedsMatching(ctx, "ord")
 	fmt.Println("filtered:", filtered)
 
-	orders, err := shop.Feed("orders")
+	// FeedForDomain[string] binds UTF-8 payloads on the Feed handle —
+	// the SDK serializes, no []byte(...) casts in app code.
+	orders, err := whitewater.FeedForDomain[string](shop, "orders")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -56,7 +58,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if _, err := writer.Append(ctx, "order-1", []byte(`{"total":42}`)); err != nil {
+	if _, err := writer.Append(ctx, "order-1", `{"total":42}`); err != nil {
 		log.Fatal(err)
 	}
 
