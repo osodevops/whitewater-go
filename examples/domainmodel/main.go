@@ -65,7 +65,7 @@ func main() {
 	reader, err := whitewater.NewReaderBuilder(client, shop, orders).
 		ReaderID("shop.fulfillment").
 		StartPoint(whitewater.StartBeginning()).
-		Capacity(64).
+		MaxPageSize(64).
 		Open(ctx)
 	if err != nil {
 		log.Fatal(err)

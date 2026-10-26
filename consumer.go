@@ -53,7 +53,7 @@ type FeedConsumer[K comparable, V any] struct {
 	reader string
 
 	start          ReaderStart
-	capacity       int
+	maxPageSize    int
 	initialBackoff time.Duration
 	maxBackoff     time.Duration
 	onError        func(error)
@@ -75,7 +75,7 @@ func newFeedConsumer[K comparable, V any](
 		feed:           feed,
 		reader:         reader,
 		start:          StartBeginning(),
-		capacity:       subscribeCapacity,
+		maxPageSize:    subscribeCapacity,
 		initialBackoff: consumerInitialBackoff,
 		maxBackoff:     consumerMaxBackoff,
 		closing:        make(chan struct{}),
@@ -94,9 +94,9 @@ func (c *FeedConsumer[K, V]) StartAt(start ReaderStart) *FeedConsumer[K, V] {
 	return c
 }
 
-// Capacity sets records fetched per page (default 128).
-func (c *FeedConsumer[K, V]) Capacity(capacity int) *FeedConsumer[K, V] {
-	c.capacity = capacity
+// MaxPageSize sets the max records delivered per page (default 128).
+func (c *FeedConsumer[K, V]) MaxPageSize(maxPageSize int) *FeedConsumer[K, V] {
+	c.maxPageSize = maxPageSize
 	return c
 }
 
@@ -234,7 +234,7 @@ func (c *FeedConsumer[K, V]) supervise(
 		}
 		var iterErr error
 		sub := c.feed.subscribeDecoded(
-			ctx, c.reader, c.start, c.capacity,
+			ctx, c.reader, c.start, c.maxPageSize,
 			func(messages []FeedMessage[K, V]) error {
 				for _, message := range messages {
 					if err := deliver(ctx, message); err != nil {

@@ -172,7 +172,7 @@ func TestDomain(t *testing.T) {
 	reader, err := NewReaderBuilder(client, domain, feed).
 		ReaderID("shop.fulfillment").
 		StartPoint(StartBeginning()).
-		Capacity(256).
+		MaxPageSize(256).
 		Open(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -272,7 +272,7 @@ func TestDomainScopedBuildersAndForEach(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reader, err := rbuilder.ReaderID("fulfillment").StartPoint(StartBeginning()).Capacity(1).Open(ctx)
+	reader, err := rbuilder.ReaderID("fulfillment").StartPoint(StartBeginning()).MaxPageSize(1).Open(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -500,15 +500,15 @@ func (d *Domain) requireOwnedFeed(feed string) error {
 //	reader, err := whitewater.NewReaderBuilder(client, shop, orders).
 //	    ReaderID("fulfillment").          // the Kafka groupId analogue
 //	    StartPoint(whitewater.StartBeginning()).
-//	    Capacity(256).
+//	    MaxPageSize(256).
 //	    Open(ctx)                          // *FeedReader[K,V]
 type ReaderBuilder[K comparable, V any] struct {
-	client   *Client
-	domain   *Domain
-	feed     *Feed[K, V]
-	readerID string
-	start    ReaderStart
-	capacity int
+	client      *Client
+	domain      *Domain
+	feed        *Feed[K, V]
+	readerID    string
+	start       ReaderStart
+	maxPageSize int
 }
 
 // NewReaderBuilder starts a fluent Reader declaration on feed inside
@@ -518,7 +518,7 @@ func NewReaderBuilder[K comparable, V any](
 ) *ReaderBuilder[K, V] {
 	return &ReaderBuilder[K, V]{
 		client: client, domain: domain, feed: feed,
-		start: StartBeginning(), capacity: 128,
+		start: StartBeginning(), maxPageSize: 128,
 	}
 }
 
@@ -537,9 +537,10 @@ func (b *ReaderBuilder[K, V]) StartPoint(start ReaderStart) *ReaderBuilder[K, V]
 	return b
 }
 
-// Capacity bounds each fetch page — the default is 128.
-func (b *ReaderBuilder[K, V]) Capacity(capacity int) *ReaderBuilder[K, V] {
-	b.capacity = capacity
+// MaxPageSize bounds the records delivered per fetch page — the
+// default is 128.
+func (b *ReaderBuilder[K, V]) MaxPageSize(maxPageSize int) *ReaderBuilder[K, V] {
+	b.maxPageSize = maxPageSize
 	return b
 }
 
@@ -571,7 +572,7 @@ func (b *ReaderBuilder[K, V]) Open(ctx context.Context) (*FeedReader[K, V], erro
 		return nil, err
 	}
 	sessionClient := b.client.Reader(id)
-	session, err := sessionClient.Open(ctx, b.capacity)
+	session, err := sessionClient.Open(ctx, b.maxPageSize)
 	if err != nil {
 		return nil, err
 	}

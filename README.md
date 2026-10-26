@@ -48,7 +48,7 @@ typed,  _ := whitewater.FeedForDomain[Order](shop, "orders")
 builder, _ := shop.CreateReader("orders")
 reader, _ := builder.ReaderID("fulfillment").  // durable identity — Kafka groupId
     StartPoint(whitewater.StartBeginning()).   // first-time start — auto.offset.reset
-    Capacity(256).
+    MaxPageSize(256).
     Open(ctx)                                // *FeedReader[string, []byte]
 
 wbuilder, _ := shop.CreateWriter("orders")
@@ -193,7 +193,7 @@ err := in.Consumer("enricher").Run(ctx, func(m FeedMessage[string, UpdateRequest
   names, denied auth — everything after the first open is supervised
   forever. `Close()` signals stop from anywhere (SIGTERM handler or
   inside the handler itself); `Wait()`/`Done()` await full stop.
-- `.StartAt`, `.Capacity(n)`, `.Backoff(min, max)`, `.OnError(fn)`,
+- `.StartAt`, `.MaxPageSize(n)`, `.Backoff(min, max)`, `.OnError(fn)`,
   `.LastError()` tune and observe it; `feed.Subscribe` remains for
   page-oriented control.
 
@@ -365,7 +365,7 @@ escape hatches for the same wire contract.
 | Writing | `FeedWriter.Append(k, v)` `AppendEvent` `AppendAll` · `UseCompression` `SessionEpoch` · idempotent `request_id` per call · Metadata + event time via `FeedEvent` |
 | Reading | `FeedReader.Fetch(limit)` `Ack` `AckCursor` `Close` `SessionEpoch` · durable `ReaderID` · `ReaderStart` — `StartBeginning()` `StartNow()` `StartCursor(c)` `StartTimestampNs(ns)` |
 | Temporary fetches | `Feed.Fetch(opts)` / `FeedClient.TemporaryFetch` — `after_event_time_ns` seeks, `new_only`, `tail` + `wait_ms` long-poll · `Feed.Load(start, sink)` · `Feed.Records` |
-| Consumers | `feed.Consumer(reader)` → `FeedConsumer`: `StartAt` `Capacity` `Backoff` `OnError` `LastError` `Err` · `Messages` channel / `Run` / `Close` `Wait` `Done` |
+| Consumers | `feed.Consumer(reader)` → `FeedConsumer`: `StartAt` `MaxPageSize` `Backoff` `OnError` `LastError` `Err` · `Messages` channel / `Run` / `Close` `Wait` `Done` |
 | Subscription members | `client.SubscriptionMember(sub)`: `Join` `Claim` `Renew` `Release` `Fetch` `Ack` — shared progress + RF3 work leases · `Feed.Subscribe` managed loop |
 | StateStores | `client.StateStore(name)` / `NewStateStore`: `AddKey` `NamedKeys` `Put` `Get` `GetBy` `Delete` `Page` `Iterate` `Clear` `Drop` · `client.StateStores.Define` `Drop` |
 | Indexes | `QueryIndex(name, IndexPredicate)` → `IndexPage` · `IndexExact` `IndexPrefix` `IndexRange` + `InclusiveBound` `ExclusiveBound` |
