@@ -81,7 +81,7 @@ declared, _ := shop.DeclaredFeedSchema(ctx, "shop.orders")
 client.ClearFeedSchema(ctx, "shop.orders")            // reverts to inheritance
 ```
 
-Formats today: `text`, `json`, `protobuf`, `avro`, `custom.<name>`;
+Formats today: `json`, `jsonschema`, `avro`, `protobuf`, `text`, `bytes`, or `custom.<name>`;
 compatibility enforcement is a no-op until the registry contract lands.
 
 ### Typed feeds — the idiomatic path

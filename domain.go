@@ -11,7 +11,7 @@ import (
 
 // SchemaDecl is one side of a Feed's schema metadata — format plus
 // optional subject/definition text. Formats: "text", "json",
-// "protobuf", "avro", "custom.<name>". Records stay schema-neutral
+// "avro", "protobuf", "text", "bytes", or "custom.<name>". Records stay schema-neutral
 // bytes on the wire; declarations are catalog metadata for tooling,
 // validation, and compatibility — not yet an enforced registry.
 type SchemaDecl struct {
