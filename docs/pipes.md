@@ -17,6 +17,12 @@ client := whitewater.NewClient(
     []string{"localhost:7371"},
     30*time.Second,
 )
+
+// Pipes are declared inside a Domain — its name resolves there, and so
+// does its input Subscription (the Pipe's own durable frontier). Every
+// other endpoint is a ScopedRef: Rel("...") composes in-domain, while
+// a *Feed/*Store handle or Abs("other.name") points across Domains.
+ops, _ := client.CreateDomain(ctx, "ops")
 ```
 
 ## 1. Prerequisites: subscriptions and stores
@@ -25,31 +31,28 @@ Every Pipe names a **Subscription** — the durable delivery lease it pulls
 input through. Declare one per Pipe:
 
 ```go
-_, err = client.Commands(ctx, []map[string]any{{
-    "command": "create_subscription",
-    "name":    "orders.sub",
-    "feed":    "ops.orders",
-    "start":   map[string]any{"kind": "beginning"},
-}})
+_, err = ops.CreateSubscription(ctx, "orders.sub",
+    whitewater.Rel("orders"), whitewater.StartBeginning())
 ```
 
 `enrich` and `window` pipes need a **StateStore** (see `docs/stores.md`):
 
 ```go
-spec, err := whitewater.NewStateStore("ops.customers")
-if err != nil { /* invalid dotted name */ }
+spec, err := whitewater.NewStateStore("customers")      // -> ops.customers
+if err != nil { /* invalid relative name */ }
 spec.AddKey("email", true, whitewater.JsonExtractor("$.email")).
     AddKey("tier", false, whitewater.JsonExtractor("$.tier"))
-store, err := client.StateStores.Define(ctx, spec, "ops.customer.changes")
+// the source Feed may cross Domains — pass its *Feed handle or Abs(...)
+store, err := ops.DefineStateStore(ctx, spec, whitewater.Rel("customer.changes"))
 ```
 
 ## 2. Forward pipes
 
 ```go
-_, err = client.DefineForwardPipe(ctx,
-    "ops.orders.relay",   // pipe name (dotted)
-    "orders.sub",         // source subscription
-    "ops.orders.relayed") // output feed
+_, err = ops.DefineForwardPipe(ctx,
+    "orders.relay",                    // pipe name -> ops.orders.relay
+    whitewater.Rel("orders.sub"),      // input subscription (same Domain)
+    whitewater.Rel("orders.relayed"))  // output feed
 ```
 
 ## 3. Enrich pipes
@@ -60,11 +63,11 @@ against the store, and copy the matched row into output metadata
 journal — replayed outputs are byte-identical.
 
 ```go
-_, err = client.DefineEnrichPipe(ctx,
-    "ops.orders.enrich",
-    "orders.sub",
-    "ops.enriched",
-    "ops.customers", // lookup store
+_, err = ops.DefineEnrichPipe(ctx,
+    "orders.enrich",
+    whitewater.Rel("orders.sub"),
+    whitewater.Rel("enriched"),
+    whitewater.Rel("customers"), // lookup store — may be Abs()/a *Store
     whitewater.EnrichOperation(
         whitewater.JsonExtractor("$.customerId"),
         whitewater.EnrichOptions{
@@ -72,7 +75,7 @@ _, err = client.DefineEnrichPipe(ctx,
             Named:     "email",                     // named key; "" = primary
             OnMiss:    whitewater.EnrichMissQuarantine, // Forward | Drop | Quarantine
         }),
-    "ops.enrich.misses") // quarantine feed (required for Quarantine)
+    whitewater.Rel("enrich.misses")) // quarantine feed
 ```
 
 ## 4. Window pipes
@@ -82,17 +85,17 @@ must carry non-unique named keys `key` and `pane` so pane rows stay
 enumerable without composite row keys:
 
 ```go
-panes, err := whitewater.NewStateStore("ops.order.counts")
+panes, err := whitewater.NewStateStore("order.counts")   // -> ops.order.counts
 if err != nil {
     // handle
 }
 panes.AddKey("key", false).AddKey("pane", false)
-_, err = client.StateStores.Define(ctx, panes, "")
+_, err = ops.DefineStateStore(ctx, panes, nil)
 
-_, err = client.DefineWindowPipe(ctx,
-    "ops.orders.hourly",
-    "orders.sub",
-    "ops.order.counts", // pane store (declared above)
+_, err = ops.DefineWindowPipe(ctx,
+    "orders.hourly",
+    whitewater.Rel("orders.sub"),
+    whitewater.Rel("order.counts"), // pane store — may be Abs()/a *Store
     whitewater.WindowOperation(
         time.Hour, // 1h panes
         whitewater.JsonExtractor("$.region"),
@@ -104,7 +107,7 @@ _, err = client.DefineWindowPipe(ctx,
             Expire:    24 * time.Hour,             // keep panes 24h
             KeyLimit:  10_000,
         }),
-    "ops.hourly.emits") // optional emit feed for closed panes
+    whitewater.Rel("hourly.emits")) // optional emit feed for closed panes
 ```
 
 ### Lateness models — pick exactly one
@@ -131,14 +134,14 @@ whitewater.AverageAggregation(whitewater.JsonExtractor("$.rtt"))
 ## 5. Lifecycle
 
 ```go
-pipe := client.Pipe("ops.orders.relay")
+pipe, _ := ops.Pipe("orders.relay")
 
 info, _ := pipe.Describe(ctx) // stage, operation, outputs, status
 _ = pipe.Pause(ctx)           // cooperative; the frontier stays put
 _ = pipe.Resume(ctx)          // restarts from the durable frontier
 _ = pipe.Drop(ctx)
 
-all, _ := client.Pipes(ctx)
+all, _ := ops.PipeInfos(ctx)
 ```
 
 `pause` is durable and idempotent — nothing is dropped while paused.
@@ -159,5 +162,10 @@ for _, row := range demand.Rows {
 - Declarations commit atomically inside the command batch — submit
   subscription + `define_pipe` in one `client.Commands` call to apply
   both or neither.
+- The Pipe's name and input Subscription always live in the declaring
+  Domain; endpoints reach across Domains only through an explicit
+  `Abs(...)`, a `*Feed`/`*Store` handle, or a `SubscriptionRef` — the
+  wire always carries qualified names. See the purchasing → warehouse
+  flow in `examples/crossdomain/main.go`.
 - Pipe delivery is at-least-once; effects journal lookups/accumulation so
   replayed outputs are byte-identical.

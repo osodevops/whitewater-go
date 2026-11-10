@@ -18,8 +18,8 @@ func TestCompressionCanBeToggledWithoutChangingPayloadsOrOriginalClients(t *test
 	defer server.Close()
 	client := NewClient("test-key", []string{server.URL}, time.Second)
 	ctx := context.Background()
-	feed := client.Feeds
-	writer := client.Writer("orders.writer", 7)
+	feed := client.feeds
+	writer := client.writer("orders.writer", 7)
 	input := AppendInput{RequestID: newUUID(), Key: []byte("key"), Payload: []byte{0, 255}}
 	record := FeedAppend{RequestID: input.RequestID, WriterSessionID: newUUID(), WriterEpoch: 1, Sequence: 1, Key: input.Key, Payload: input.Payload}
 	for _, enabled := range []bool{false, true, false, true} {
@@ -52,7 +52,7 @@ func TestCompressionCanBeToggledWithoutChangingPayloadsOrOriginalClients(t *test
 			}
 		}
 	}
-	if _, err := client.Feeds.Append(ctx, "orders.events", record); err != nil {
+	if _, err := client.feeds.Append(ctx, "orders.events", record); err != nil {
 		t.Fatal(err)
 	}
 	bodies := stub.bodiesFor("/v1/feeds/append")

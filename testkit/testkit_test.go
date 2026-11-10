@@ -19,10 +19,16 @@ func newFeed(
 	t *testing.T, client *whitewater.Client, name string,
 ) *whitewater.Feed[string, string] {
 	t.Helper()
-	if _, err := client.CreateFeed(context.Background(), name); err != nil {
+	dot := strings.IndexByte(name, '.')
+	domain, err := client.Domain(name[:dot])
+	if err != nil {
+		t.Fatalf("Domain: %v", err)
+	}
+	relative := name[dot+1:]
+	if _, err := domain.CreateFeed(context.Background(), relative); err != nil {
 		t.Fatalf("CreateFeed: %v", err)
 	}
-	feed, err := client.Feed(name)
+	feed, err := domain.Feed(relative)
 	if err != nil {
 		t.Fatalf("Feed: %v", err)
 	}
@@ -222,15 +228,19 @@ func TestStoreRoundTrip(t *testing.T) {
 	client := fake.Client()
 	ctx := context.Background()
 
-	spec, err := whitewater.NewStateStore("accounts.employees")
+	spec, err := whitewater.NewStateStore("employees")
 	if err != nil {
 		t.Fatal(err)
 	}
 	spec.AddKey("department", false)
-	if _, err := client.StateStores.Define(ctx, spec, ""); err != nil {
+	accounts, err := client.Domain("accounts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := accounts.DefineStateStore(ctx, spec, nil); err != nil {
 		t.Fatalf("Define: %v", err)
 	}
-	store, err := client.StateStore("accounts.employees")
+	store, err := accounts.StateStore("employees")
 	if err != nil {
 		t.Fatalf("StateStore: %v", err)
 	}
@@ -349,7 +359,11 @@ func TestHealthAndUnknownRoute(t *testing.T) {
 
 	// The fake does not model index queries: the 404 envelope still
 	// decodes to a typed Refused through the public API.
-	if _, err := client.QueryIndex(
+	ops, err := client.Domain("ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ops.QueryIndex(
 		ctx, "phantom", whitewater.IndexExact("x"), 1, false); err == nil ||
 		!whitewater.IsRefused(err) {
 		t.Fatalf("QueryIndex err = %v, want Refused", err)

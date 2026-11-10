@@ -34,49 +34,51 @@ func main() {
 		30*time.Second,
 	)
 
-	// Provisioning: domain + feeds + the source Subscription every Pipe
-	// consumes + the enrichment lookup store.
-	for _, step := range []func() error{
-		func() error { _, err := client.CreateDomain(ctx, "pipedemo"); return err },
-		func() error { _, err := client.CreateFeed(ctx, "pipedemo.updates"); return err },
-		func() error { _, err := client.CreateFeed(ctx, "pipedemo.updates.copy"); return err },
-		func() error { _, err := client.CreateFeed(ctx, "pipedemo.updates.enriched"); return err },
-		func() error { _, err := client.CreateFeed(ctx, "pipedemo.updates.dlq"); return err },
-		func() error { _, err := client.CreateFeed(ctx, "pipedemo.updates.panes"); return err },
-		func() error {
-			_, err := client.CreateSubscription(
-				ctx, "pipedemo.updates.sub", "pipedemo.updates", whitewater.StartBeginning())
-			return err
-		},
-		func() error {
-			profiles, err := whitewater.NewStateStore("pipedemo.profiles")
-			if err != nil {
-				return err
-			}
-			_, err = client.StateStores.Define(ctx, profiles, "")
-			return err
-		},
-		func() error {
-			// A window Pipe's output store must pre-declare non-unique
-			// 'key' and 'pane' named keys — pane rows post their group
-			// key and pane index under them so the view stays enumerable.
-			panes, err := whitewater.NewStateStore("pipedemo.minute.counts")
-			if err != nil {
-				return err
-			}
-			panes.AddKey("key", false).AddKey("pane", false)
-			_, err = client.StateStores.Define(ctx, panes, "")
-			return err
-		},
+	// Provisioning: the Domain owns every resource — feeds, the source
+	// Subscription every Pipe consumes, and the lookup/pane stores.
+	pipedemo, err := client.CreateDomain(ctx, "pipedemo")
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, feed := range []string{
+		"updates", "updates.copy", "updates.enriched", "updates.dlq", "updates.panes",
 	} {
-		if err := step(); err != nil {
+		if _, err := pipedemo.CreateFeed(ctx, feed); err != nil {
 			log.Fatal(err)
 		}
 	}
+	if _, err := pipedemo.CreateSubscription(
+		ctx, "updates.sub", whitewater.Rel("updates"), whitewater.StartBeginning()); err != nil {
+		log.Fatal(err)
+	}
+
+	profiles, err := whitewater.NewStateStore("profiles")
+	if err != nil {
+		log.Fatal(err)
+	}
+	if _, err := pipedemo.DefineStateStore(ctx, profiles, nil); err != nil {
+		log.Fatal(err)
+	}
+
+	// A window Pipe's output store must pre-declare non-unique
+	// 'key' and 'pane' named keys — pane rows post their group
+	// key and pane index under them so the view stays enumerable.
+	panes, err := whitewater.NewStateStore("minute.counts")
+	if err != nil {
+		log.Fatal(err)
+	}
+	panes.AddKey("key", false).AddKey("pane", false)
+	if _, err := pipedemo.DefineStateStore(ctx, panes, nil); err != nil {
+		log.Fatal(err)
+	}
+
+	// Every Pipe endpoint is a ScopedRef — Rel(...) resolves inside
+	// pipedemo; a *Feed/*Store handle or Abs(...) would cross Domains.
 
 	// 1. forward — the copy Pipe: subscription -> output Feed verbatim.
-	if _, err := client.DefineForwardPipe(
-		ctx, "pipedemo.relay", "pipedemo.updates.sub", "pipedemo.updates.copy"); err != nil {
+	if _, err := pipedemo.DefineForwardPipe(
+		ctx, "relay",
+		whitewater.Rel("updates.sub"), whitewater.Rel("updates.copy")); err != nil {
 		log.Fatal(err)
 	}
 	fmt.Println("declared pipedemo.relay (forward)")
@@ -89,9 +91,10 @@ func main() {
 			Freshness: whitewater.EnrichLatest,
 			OnMiss:    whitewater.EnrichMissQuarantine,
 		})
-	if _, err := client.DefineEnrichPipe(
-		ctx, "pipedemo.enrich", "pipedemo.updates.sub", "pipedemo.updates.enriched",
-		"pipedemo.profiles", enrich, "pipedemo.updates.dlq"); err != nil {
+	if _, err := pipedemo.DefineEnrichPipe(
+		ctx, "enrich",
+		whitewater.Rel("updates.sub"), whitewater.Rel("updates.enriched"),
+		whitewater.Rel("profiles"), enrich, whitewater.Rel("updates.dlq")); err != nil {
 		log.Fatal(err)
 	}
 	fmt.Println("declared pipedemo.enrich (enrich, quarantine-on-miss)")
@@ -107,16 +110,20 @@ func main() {
 			MaxLate: 30 * time.Second,
 			Expire:  time.Hour,
 		})
-	if _, err := client.DefineWindowPipe(
-		ctx, "pipedemo.minutecounts", "pipedemo.updates.sub", "pipedemo.minute.counts",
-		window, "pipedemo.updates.panes"); err != nil {
+	if _, err := pipedemo.DefineWindowPipe(
+		ctx, "minutecounts",
+		whitewater.Rel("updates.sub"), whitewater.Rel("minute.counts"),
+		window, whitewater.Rel("updates.panes")); err != nil {
 		log.Fatal(err)
 	}
 	fmt.Println("declared pipedemo.minutecounts (window count)")
 
 	// Lifecycle: describe the catalog row, then pause and resume — the
 	// same drive verbs every Pipe honors.
-	pipe := client.Pipe("pipedemo.enrich")
+	pipe, err := pipedemo.Pipe("enrich")
+	if err != nil {
+		log.Fatal(err)
+	}
 	info, err := pipe.Describe(ctx)
 	if err != nil {
 		log.Fatal(err)

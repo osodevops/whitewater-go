@@ -2,8 +2,9 @@
 // key/payload codecs once, then Append(key, value) encodes and every
 // Fetch/Records decodes — application code never touches bytes.
 //
-//	orders.Writer("ingest")   — declares the Writer + opens a session
-//	orders.Reader("audit", 64) — declares the Reader + opens a session
+//	demo.CreateFeed("orders")     — declares demo.orders
+//	orders.Writer("ingest")       — declares the Writer + opens a session
+//	orders.Reader("audit", 64)    — declares the Reader + opens a session
 //	writer.Append / reader.Fetch / reader.Ack
 package main
 
@@ -33,17 +34,17 @@ func main() {
 		30*time.Second,
 	)
 
-	for _, step := range []func() error{
-		func() error { _, err := client.CreateDomain(ctx, "demo"); return err },
-		func() error { _, err := client.CreateFeed(ctx, "demo.orders"); return err },
-	} {
-		if err := step(); err != nil {
-			log.Fatal(err)
-		}
+	demo, err := client.CreateDomain(ctx, "demo")
+	if err != nil {
+		log.Fatal(err)
+	}
+	if _, err := demo.CreateFeed(ctx, "orders"); err != nil {
+		log.Fatal(err)
 	}
 
-	// String keys + JSON payloads — both codecs inferred from the types.
-	orders, err := whitewater.FeedFor[Order](client, "demo.orders")
+	// String keys + JSON payloads — both codecs inferred from the types;
+	// the Feed binds inside the Domain that owns it.
+	orders, err := whitewater.FeedForDomain[Order](demo, "orders")
 	if err != nil {
 		log.Fatal(err)
 	}

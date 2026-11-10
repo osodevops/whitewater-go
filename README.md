@@ -54,7 +54,7 @@ reader, _ := builder.ReaderID("fulfillment").  // durable identity — Kafka gro
     Open(ctx)                                // *FeedReader[string, string]
 
 wbuilder, _ := shop.CreateWriter("orders")
-writer, _ := wbuilder.WriterID("orders.ingest").Open(ctx)
+writer, _ := wbuilder.WriterID("ingest").Open(ctx)   // declares shop.ingest
 
 // reader.ForEach pumps records one at a time — deliver, then ack each
 // page; return false or an error to stop with the page unacked:
@@ -82,14 +82,14 @@ a Feed's own declaration overrides the named sides:
 client.SetDomainSchema(ctx, "shop", &whitewater.FeedSchema{
     Value: &whitewater.SchemaDecl{Format: "json", Subject: "order-v1"},
 })
-client.SetFeedSchema(ctx, "shop.orders", &whitewater.FeedSchema{
+shop.SetFeedSchema(ctx, "orders", &whitewater.FeedSchema{
     Key: &whitewater.SchemaDecl{Format: "text"},
 })
 
-schema, _   := shop.Schema(ctx)                       // the Domain default
-effective,_ := shop.FeedSchema(ctx, "shop.orders")    // key=text, value=json/order-v1
-declared, _ := shop.DeclaredFeedSchema(ctx, "shop.orders")
-client.ClearFeedSchema(ctx, "shop.orders")            // reverts to inheritance
+schema, _   := shop.Schema(ctx)                  // the Domain default
+effective,_ := shop.FeedSchema(ctx, "orders")    // key=text, value=json/order-v1
+declared, _ := shop.DeclaredFeedSchema(ctx, "orders")
+shop.ClearFeedSchema(ctx, "orders")              // reverts to inheritance
 ```
 
 Formats today: `json`, `jsonschema`, `avro`, `protobuf`, `text`, `bytes`, or `custom.<name>`;
@@ -108,10 +108,11 @@ type Order struct {
 }
 
 client := whitewater.NewClient("api-key", endpoints, 30*time.Second)
+shop, _ := client.Domain("shop")
 
-// String keys + JSON payloads — FeedFor picks both codecs from the
-// types (FeedOf takes explicit codecs for protobuf/custom formats).
-orders, _ := whitewater.FeedFor[Order](client, "shop.orders")
+// String keys + JSON payloads — FeedForDomain picks both codecs from the
+// types (FeedOfDomain takes explicit codecs for protobuf/custom formats).
+orders, _ := whitewater.FeedForDomain[Order](shop, "orders")
 
 // Writer auto-declares the named Writer and opens its session —
 // Append(key, value) encodes for you.
@@ -158,15 +159,17 @@ whitewater.FuncCodec(enc, dec)    // protobuf, msgpack, application framing
 proto := whitewater.FuncCodec(
     func(u *User) ([]byte, error) { return proto.Marshal(u) },
     func(b []byte) (*User, error) { var u User; return &u, proto.Unmarshal(b, &u) })
-users, _ := whitewater.FeedOf(client, "app.users", whitewater.StringCodec(), proto)
+app, _ := client.Domain("app")
+users, _ := whitewater.FeedOfDomain(app, "users", whitewater.StringCodec(), proto)
 
 // Rebind any bound facade under different codecs — no wire call:
 raw := whitewater.RebindFeed(users, whitewater.StringCodec(), whitewater.BytesCodec())
 ```
 
-`client.Feed(name)` returns the default `Feed[string, string]` — UTF-8
+`domain.Feed(relative)` returns the default `Feed[string, string]` — UTF-8
 strings both ways, so un-schema-backed JSON flows with zero binding.
-`RebindFeed`/`FeedOf` with `BytesCodec()` is the escape hatch to raw bytes.
+`RebindFeed`/`FeedOfDomain` with `BytesCodec()` is the escape hatch to
+raw bytes.
 
 ### Permanent consumers — the Kafka loop without the plumbing
 
@@ -209,20 +212,19 @@ DLQ, idempotent outputs, counters — is
 The raw `[]byte` API stays available for full control:
 
 ```go
-// Provision a Domain, Feed, Writer, and session — either typed
-// (each method builds its WCL statement for you):
-_, err := client.CreateDomain(ctx, "shop")
-shop, _ = client.GetDomain(ctx, "shop")
-_, err = shop.CreateFeed(ctx, "orders")   // = CreateFeed(ctx, "shop.orders")
-_, err = client.CreateWriter(ctx, "orders-writer", "shop.orders")
-setup, err := client.OpenWriterSession(ctx, "orders-writer")
+// Provision a Domain, Feed, Writer, and session — every resource
+// hangs off the Domain; each method builds its WCL statement for you:
+shop, err := client.CreateDomain(ctx, "shop")
+_, err = shop.CreateFeed(ctx, "orders")
+_, err = shop.CreateWriterFeed(ctx, "orders-writer", whitewater.Rel("orders"))
+setup, err := shop.OpenWriterSession(ctx, "orders-writer")
 // setup.Results[0].Data holds {"session_epoch": N}
 //
 // …or raw WCL when a script is clearer:
 //   client.WCL(ctx, "CREATE DOMAIN shop; CREATE FEED shop.orders; ...")
 
 // Idempotent append — retrying with the same RequestID is safe.
-writer := client.Writer("orders-writer", sessionEpoch)
+writer, _ := shop.Writer("orders-writer", sessionEpoch)
 eventTime := time.Now().UnixNano()
 appended, err := writer.Append(ctx, whitewater.AppendInput{
     RequestID:   "a-stable-request-uuid",
@@ -232,8 +234,10 @@ appended, err := writer.Append(ctx, whitewater.AppendInput{
     Metadata:    map[string][]byte{"source": []byte("api")},
 })
 
-// Independent durable reader.
-reader := client.Reader("orders-reader")
+// Independent durable reader — declared inside the Domain too:
+_, _ = shop.CreateReaderFeed(ctx, "orders-reader",
+    whitewater.Rel("orders"), whitewater.StartBeginning())
+reader, _ := shop.Reader("orders-reader")
 session, err := reader.Open(ctx, 64)
 page, err := reader.Fetch(ctx, session, 128)
 for _, record := range page.Records {
@@ -250,11 +254,12 @@ Declare named keys on the spec, then bind typed codecs once — every
 Put/Get/Iterate serializes through them:
 
 ```go
-spec, _ := whitewater.NewStateStore("accounts.employees")
+accounts, _ := client.CreateDomain(ctx, "accounts")
+spec, _ := whitewater.NewStateStore("employees")           // resolves to accounts.employees
 spec.AddKey("passport", true).AddKey("department", false)  // up to 10 named keys
-_, err := client.StateStores.Define(ctx, spec, "")
+_, err := accounts.DefineStateStore(ctx, spec, nil)        // nil source = manual store
 
-profiles, _ := whitewater.StoreFor[Profile](client, "accounts.employees")
+profiles, _ := whitewater.StoreForDomain[Profile](accounts, "employees")
 _, err = profiles.Put(ctx, "user-1", profile,
     map[string]any{"passport": "P111", "department": "eng"}, "")
 
@@ -273,14 +278,14 @@ user, found, _ = profiles.FindBy(ctx, "user_id", userID, false, 0)
 count, _ := counters.GetOrDefault(ctx, bucket, 0)
 ```
 
-`client.Store(name)` binds the default `Store[string, []byte]`; the
-byte-level `client.StateStore(name)` facade remains for raw access.
+`domain.Store(relative)` binds the default `Store[string, []byte]`; the
+byte-level `domain.StateStore(relative)` facade remains for raw access.
 The facade is thin — rows live on the Nodes (RF3 + Fjall) and reads
 carry freshness evidence. See [docs/stores.md](docs/stores.md) for the
 full guide and [docs/pipes.md](docs/pipes.md) for managed stream jobs
 (forward/enrich/window) built on subscriptions and stores. When you only need the value, `Find` (primary) and `FindBy`
 (named key, first match) return `(V, bool, error)`; `GetOrDefault`
-collapses miss handling to one line: `client.Feeds.Load` remains the lighter one-shot history
+collapses miss handling to one line: `feed.Load` remains the lighter one-shot history
 read into any `func([]Record) error` sink.
 
 ### Error handling
@@ -305,33 +310,40 @@ Managed Pipes and replicated Indexes share the same topology-free model
 
 ```go
 // Pipe declaration: the client names the business key, source and
-// outputs — the server owns panes, leases and the effect journal.
-_, _ = client.DefineForwardPipe(ctx, "orders.relay", "orders-sub",
-    "orders.relayed")
-_, _ = client.DefineEnrichPipe(ctx, "orders.enrich", "orders-sub",
-    "orders.enriched", "crm.customers",
+// outputs — the server owns panes, leases and the effect journal. Every
+// endpoint is a ScopedRef: Rel resolves in-domain; a *Feed/*Store
+// handle or Abs(...) crosses Domains — the Pipe's own name and its
+// input Subscription always stay in the declaring Domain.
+orders, _ := client.Domain("orders")
+_, _ = orders.DefineForwardPipe(ctx, "relay",
+    whitewater.Rel("orders-sub"), whitewater.Rel("relayed"))
+_, _ = orders.DefineEnrichPipe(ctx, "enrich",
+    whitewater.Rel("orders-sub"), whitewater.Rel("enriched"),
+    whitewater.Abs("crm.customers"),   // the lookup store lives in crm
     whitewater.EnrichOperation(whitewater.KeyExtractor(),
         whitewater.EnrichOptions{Freshness: whitewater.EnrichLatest,
             OnMiss: whitewater.EnrichMissQuarantine}),
-    "orders.enrich-dlq")
-_, _ = client.DefineWindowPipe(ctx, "orders.hourly", "orders-sub",
-    "stats.orders-hourly",
+    whitewater.Rel("enrich-dlq"))
+_, _ = orders.DefineWindowPipe(ctx, "hourly",
+    whitewater.Rel("orders-sub"), whitewater.Abs("stats.orders-hourly"),
     whitewater.WindowOperation(time.Hour, // 1h panes
         whitewater.KeyExtractor(), whitewater.CountAggregation(),
         whitewater.WindowOptions{Time: whitewater.WindowEventTime,
             Watermark: 5 * time.Minute, // 5m horizon
             Grace:     30 * time.Second, // 30s late revisions
             Expire:    2 * time.Hour}),
-    "orders.hourly-emitted")
+    whitewater.Rel("hourly-emitted"))
 
 // Pipe lifecycle: describe, pause, resume, drop.
-pipe := client.Pipe("orders.relay")
+pipe, _ := orders.Pipe("relay")
 info, _ := pipe.Describe(ctx)   // stage, operation, outputs, status
 _ = pipe.Pause(ctx); _ = pipe.Resume(ctx); _ = pipe.Drop(ctx)
-pipes, _ := client.Pipes(ctx)   // the declared catalog
+pipes, _ := orders.PipeInfos(ctx)   // the declared catalog, in-domain
 
-// Index queries: exact, prefix, or range predicates over typed values.
-page, _ := client.QueryIndex(ctx, "crm.byregion",
+// Index queries: exact, prefix, or range predicates over typed values —
+// indexes stay same-Domain with their Feed.
+crm, _ := client.Domain("crm")
+page, _ := crm.QueryIndex(ctx, "byregion",
     whitewater.IndexRange([]any{"emea"},
         whitewater.InclusiveBound(0), whitewater.ExclusiveBound(99)),
     50,    // limit
@@ -362,20 +374,20 @@ escape hatches for the same wire contract.
 | Area | API |
 |---|---|
 | Client & transport | `NewClient(apiKey, endpoints, timeout)` · `Healthy(ctx)` · `UseCompression` on feeds/writers |
-| Typed Domains | `Domain(name)` lazy / `GetDomain(ctx, name)` eager · `Name` `ID` `Revision` `Describe` `Refresh` · `Feeds` `FeedsMatching` `Readers` `Writers` `Subscriptions` `Pipes` `Indexes` `StateStores` · `Feed(relative)` `FeedForDomain[V]` `FeedOfDomain[K,V]` · `CreateFeed` `CreateReader` `CreateWriter` (relative) |
-| Schemas | `SetDomainSchema` `SetFeedSchema` `ClearDomainSchema` `ClearFeedSchema` · `Domain.Schema` `FeedSchema` `DeclaredFeedSchema` · `SchemaDecl`/`FeedSchema` — `json`, `jsonschema`, `avro`, `protobuf`, `text`, `bytes`, `custom.<name>` |
-| Feeds | `client.Feed(name)` `FeedOf[K,V]` `FeedFor[V]` `RebindFeed` → `Feed[K,V]` · `UseCompression` · `Records` `Fetch` `Load` · `Writer` `Append` `Reader` `Subscribe` `Consumer` |
+| Typed Domains | `CreateDomain` / `Domain(name)` lazy / `GetDomain(ctx, name)` eager · `Name` `ID` `Revision` `Describe` `Refresh` · `Feeds` `FeedsMatching` `Readers` `Writers` `Subscriptions` `Pipes` `Indexes` `StateStores` · `Feed(relative)` `FeedForDomain[V]` `FeedOfDomain[K,V]` · `CreateFeed` `CreateReaderFeed` `CreateWriterFeed` `CreateSubscription` `CreateReader`/`CreateWriter` builders (relative) |
+| Schemas | `SetDomainSchema` `ClearDomainSchema` on the client · `Domain.SetFeedSchema` `ClearFeedSchema` `Schema` `FeedSchema` `DeclaredFeedSchema` · `SchemaDecl`/`FeedSchema` — `json`, `jsonschema`, `avro`, `protobuf`, `text`, `bytes`, `custom.<name>` |
+| Feeds | `Domain.Feed(relative)` `FeedOfDomain[K,V]` `FeedForDomain[V]` `RebindFeed` → `Feed[K,V]` · `UseCompression` · `Records` `Fetch` `Load` · `Writer` `Append` `Reader` `Subscribe` `Consumer` |
 | Writing | `FeedWriter.Append(k, v)` `AppendEvent` `AppendAll` · `UseCompression` `SessionEpoch` · idempotent `request_id` per call · Metadata + event time via `FeedEvent` |
 | Reading | `FeedReader.Fetch(limit)` `Ack` `AckCursor` `Close` `SessionEpoch` · durable `ReaderID` · `ReaderStart` — `StartBeginning()` `StartNow()` `StartCursor(c)` `StartTimestampNs(ns)` |
-| Temporary fetches | `Feed.Fetch(opts)` / `FeedClient.TemporaryFetch` — `after_event_time_ns` seeks, `new_only`, `tail` + `wait_ms` long-poll · `Feed.Load(start, sink)` · `Feed.Records` |
+| Temporary fetches | `Feed.Fetch(opts)` / `Domain.FeedOps().TemporaryFetch` — `after_event_time_ns` seeks, `new_only`, `tail` + `wait_ms` long-poll · `Feed.Load(start, sink)` · `Feed.Records` |
 | Consumers | `feed.Consumer(reader)` → `FeedConsumer`: `StartAt` `MaxPageSize` `Backoff` `OnError` `LastError` `Err` · `Messages` channel / `Run` / `Close` `Wait` `Done` |
-| Subscription members | `client.SubscriptionMember(sub)`: `Join` `Claim` `Renew` `Release` `Fetch` `Ack` — shared progress + RF3 work leases · `Feed.Subscribe` managed loop |
-| StateStores | `client.StateStore(name)` / `NewStateStore`: `AddKey` `NamedKeys` `Put` `Get` `GetBy` `Delete` `Page` `Iterate` `Clear` `Drop` · `client.StateStores.Define` `Drop` |
-| Indexes | `QueryIndex(name, IndexPredicate)` → `IndexPage` · `IndexExact` `IndexPrefix` `IndexRange` + `InclusiveBound` `ExclusiveBound` |
-| Pipes | `DefineForwardPipe` `DefineEnrichPipe` `DefineWindowPipe` · `Pipe(name)` → `Describe` `Pause` `Resume` `Drop` · `Pipes` · `ForwardOperation` `EnrichOperation` `WindowOperation` + `EnrichOptions` `WindowOptions` · `CountAggregation` `SumAggregation` `AverageAggregation` · durations are `time.Duration` |
-| Catalog lifecycle | `Create*` `Describe*` `Rename*` `Drop*` `List*` for Domain, Feed, Writer, Reader, Subscription, Role · `ListGrants` · `OpenWriterSession` `SeekReader` |
+| Subscription members | `Domain.MemberClient(sub)` / `Domain.SubscriptionRef(name).MemberClient()`: `Join` `Claim` `Renew` `Release` `Fetch` `Ack` — shared progress + RF3 work leases · `Feed.Subscribe` `Domain.Subscribe` managed loops |
+| StateStores | `Domain.StateStore` `Domain.Store` / `StoreForDomain[V]` `StoreOfDomain[K,V]` `NewStateStore(relative)`: `AddKey` `NamedKeys` `Put` `Get` `GetBy` `Delete` `Page` `Iterate` `Clear` `Drop` · `Domain.DefineStateStore` `DropStateStore` — source Feeds may cross Domains |
+| Indexes | `Domain.QueryIndex(relative, IndexPredicate)` → `IndexPage` · `IndexExact` `IndexPrefix` `IndexRange` + `InclusiveBound` `ExclusiveBound` |
+| Pipes | `Domain.DefineForwardPipe` `DefineEnrichPipe` `DefineWindowPipe` — every endpoint a `ScopedRef` (`Rel`/`Abs`/`*Feed`/`*Store`/`SubscriptionRef`); Pipe + input Subscription stay in-domain · `Domain.Pipe(relative)` → `Describe` `Pause` `Resume` `Drop` · `PipeInfos` · `ForwardOperation` `EnrichOperation` `WindowOperation` + `EnrichOptions` `WindowOptions` · `CountAggregation` `SumAggregation` `AverageAggregation` · durations are `time.Duration` |
+| Catalog lifecycle | `Create*` `Describe*` `Rename*` `Drop*` `List*` on `Domain` for Feed, Writer, Reader, Subscription · client-level `CreateDomain` `DescribeDomain` `RenameDomain` `DropDomain` `ListDomains` `CreateRole` `DescribeRole` `RenameRole` `DropRole` `ListRoles` `ListGrants` · `Domain.OpenWriterSession` `SeekReader` |
 | Observability | `DemandFeeds` `DemandReaders` `DemandSubscriptions` `DemandIndexes` `DemandPipes` → `DemandReport`/`DemandRow.Counter` · `HotKeys` → `HotKey.Feed` `ShareBps` `WindowRecords` `WindowBytes` |
-| Escape hatches | `WCL(ctx, script)` `WCLWithID` · `Commands(ctx, []map)` raw command batch · `Writer`/`Reader`/`SubscriptionMember` session clients |
+| Escape hatches | `WCL(ctx, script)` `WCLWithID` · `Commands(ctx, []map)` raw command batch · `Domain.Writer`/`Reader`/`MemberClient` session clients · `Domain.FeedOps` |
 | Errors | `*Error` carries `Kind` + wire `code` · `IsRefused` `IsStaleSession` `IsAmbiguous` `IsConflict` `IsUnavailable` `IsLeaseConflict` |
 | Testing | HTTP-transport seam — stub `RoundTripper`/loopback `httptest` servers; see the repo's `*_test.go` fixtures |
 

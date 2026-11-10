@@ -404,9 +404,11 @@ func pipeSubscription(name string) (string, error) {
 	return dottedName(name)
 }
 
-// DefineForwardPipe declares the copy Pipe — each delivered record
-// lands on the output Feed unchanged (DEFINE PIPE ... TO FEED).
-func (c *Client) DefineForwardPipe(
+// defineForwardPipe declares the copy Pipe — each delivered record
+// lands on the output Feed unchanged (DEFINE PIPE ... TO FEED). The
+// app-facing route is Domain.DefineForwardPipe, which scopes every
+// endpoint name.
+func (c *Client) defineForwardPipe(
 	ctx context.Context,
 	name, subscription, outputFeed string,
 ) (ControlExecution, error) {
@@ -423,12 +425,12 @@ func (c *Client) DefineForwardPipe(
 	return c.Commands(ctx, []map[string]any{command})
 }
 
-// DefineEnrichPipe declares point-lookup enrichment; op must be built
+// defineEnrichPipe declares point-lookup enrichment; op must be built
 // by EnrichOperation. store names the lookup StateStore (dotted);
 // quarantineFeed resolves the miss-quarantine target when the
 // operation's miss disposition is EnrichMissQuarantine — empty omits
 // it.
-func (c *Client) DefineEnrichPipe(
+func (c *Client) defineEnrichPipe(
 	ctx context.Context,
 	name, subscription, outputFeed, store string,
 	op PipeOperation,
@@ -466,11 +468,11 @@ func (c *Client) DefineEnrichPipe(
 	return c.Commands(ctx, []map[string]any{command})
 }
 
-// DefineWindowPipe declares rolling-window aggregation into a managed
+// defineWindowPipe declares rolling-window aggregation into a managed
 // StateStore view; op must be built by WindowOperation. outputStore is
 // the managed view name (dotted); emitFeed optionally emits closed
 // panes and requires the operation declare MaxLate — empty omits it.
-func (c *Client) DefineWindowPipe(
+func (c *Client) defineWindowPipe(
 	ctx context.Context,
 	name, subscription, outputStore string,
 	op PipeOperation,

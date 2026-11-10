@@ -44,9 +44,11 @@ is `type Cursor string` — opaque, never parsed or ordered.
 ## Resource management — two doors, one room
 
 `c.WCL(ctx, script)` sends raw WCL to `POST /v1/admin/wcl`. The typed
-methods in `resources.go` are thin builders over it —
-`c.CreateFeed(ctx, "orders.events")` serializes
-`CREATE FEED orders.events` and calls `WCL` internally.
+methods are thin builders over it — but they hang off `Domain`, not
+the client: `shop.CreateFeed(ctx, "orders")` serializes
+`CREATE FEED shop.orders` and calls `WCL` internally. The Domain is
+the only front door — Feeds, Writers, Readers, Subscriptions, Pipes,
+StateStores and Indexes are always declared inside one.
 
 Two validators run before interpolation, returning an `error` locally:
 
@@ -79,23 +81,26 @@ exec, err := c.WCL(ctx, `
 ```
 
 The same calls through the typed builders — each serializes one WCL
-statement and calls `WCL` internally:
+statement and calls `WCL` internally, with every name resolved inside
+the Domain:
 
 ```go
-c.CreateDomain(ctx, "shop")                        // CREATE DOMAIN shop;
-shop, _ := c.GetDomain(ctx, "shop")                // verifies + materializes
+shop, _ := c.CreateDomain(ctx, "shop")             // CREATE DOMAIN shop;
+shop, _  = c.GetDomain(ctx, "shop")                // verifies + materializes
 shop.CreateFeed(ctx, "orders")                     // CREATE FEED shop.orders;
-c.CreateWriter(ctx, "orders.writer", "shop.orders")
-c.OpenWriterSession(ctx, "orders.writer")          // epoch comes back in .Data
-c.CreateReader(ctx, "audit", "shop.orders", whitewater.StartBeginning())```
-
-`c.CreateFeed(ctx, "shop.orders")` with the fully-qualified name is the
-flat-name equivalent; `shop.CreateFeed(ctx, "orders")` composes the
-Domain prefix for you.
-c.ListFeeds(ctx)                                   // SHOW FEEDS;
-c.SeekReader(ctx, "audit", whitewater.StartNow())  // SEEK READER ... TO NOW;
-c.DropFeed(ctx, "shop.orders")                     // DROP FEED shop.orders;
+shop.CreateWriterFeed(ctx, "writer", whitewater.Rel("orders"))
+shop.OpenWriterSession(ctx, "writer")              // epoch comes back in .Data
+shop.CreateReaderFeed(ctx, "audit", whitewater.Rel("orders"),
+    whitewater.StartBeginning())
+shop.DescribeFeed(ctx, "orders")                   // DESCRIBE FEED shop.orders;
+shop.SeekReader(ctx, "audit", whitewater.StartNow())  // SEEK READER ... TO NOW;
+shop.DropFeed(ctx, "orders")                       // DROP FEED shop.orders;
 ```
+
+Relative names compose inside the Domain (`"orders"` → `shop.orders`);
+for cross-Domain endpoints — a Subscription's source Feed, a Pipe's
+output — pass a handle from the other Domain or
+`whitewater.Abs("other.events")` as the `ScopedRef`.
 
 `c.Commands` is the second door — the typed JSON command path for what
 WCL does not spell. Declaring a StateStore with named keys is the
@@ -127,7 +132,7 @@ Three shapes, in increasing durability:
    ephemeral reader; `tail` + `wait_ms` is a server-side long-poll
    returning early when records arrive. Continue with `NextCursor`,
    never the last record's cursor.
-3. **`c.Reader(name)`** — durable independent cursor:
+3. **`domain.Reader(name)`** — durable independent cursor:
    `Open` → `Fetch` → `Ack(deliveredCursor)` → `Close`. Progress
    survives restarts.
 
@@ -136,18 +141,18 @@ Two managed wrappers sit on top of those primitives:
 - **`Feeds.Load(ctx, feed, start, sink)`** — one-shot bulk read:
   pages `TemporaryFetch` from `ReaderStart` until the frontier is
   drained; `sink` is any `func([]Record) error`.
-- **`c.StateStore(name)` / `NewStateStore(name)`** — the thin facade
-  over the node-side StateStore (durable, RF3, Fjall): declare with
-  `client.StateStores.Define(ctx, spec, source)` after
+- **`Domain.StateStore(relative)` / `NewStateStore(relative)`** — the
+  thin facade over the node-side StateStore (durable, RF3, Fjall):
+  declare with `domain.DefineStateStore(ctx, spec, source)` after
   `AddKey(name, unique)` (up to 10 named secondary keys), then
   `Put(key, payload, named, mutationID)` with typed values,
   `Get(key, strict, waitMs)`, `GetBy(namedKey, value, ...)` (non-unique
   — `StoreRows`), `Delete`, `Iterate`/`Page`, `Clear`, `Drop`. The
   facade holds no rows; reads carry freshness evidence (`AppliedSeq`/
   `CommittedSeq`/`Behind`/`ServedBy`).
-- **`c.Subscribe(ctx, reader, feed, start, onRecords, onError)`** — a
-  durable consume loop on a background goroutine: provisions the Reader
-  when missing, then `Open` → [`Fetch` → `onRecords` → `Ack`] →
+- **`domain.Subscribe(ctx, reader, feed, start, onRecords, onError)`** —
+  a durable consume loop on a background goroutine: provisions the
+  Reader when missing, then `Open` → [`Fetch` → `onRecords` → `Ack`] →
   `Close`. Transient errors retry; stale sessions and hard refusals
   terminate via `onError`/`sub.Err()`. `sub.Close()` (or ctx cancel)
   stops it.

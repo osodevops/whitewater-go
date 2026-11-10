@@ -45,46 +45,46 @@ func TestWclBuilders(t *testing.T) {
 	}
 	assertScript("CREATE DOMAIN orders")
 
-	if _, err := client.CreateFeed(ctx, "orders.events"); err != nil {
+	if _, err := client.createFeed(ctx, "orders.events"); err != nil {
 		t.Fatal(err)
 	}
 	assertScript("CREATE FEED orders.events")
 
-	if _, err := client.CreateWriter(ctx, "checkout", "orders.events"); err != nil {
+	if _, err := client.createWriter(ctx, "checkout", "orders.events"); err != nil {
 		t.Fatal(err)
 	}
 	assertScript("CREATE WRITER checkout TO orders.events")
 
-	if _, err := client.CreateReader(ctx, "audit", "orders.events", StartBeginning()); err != nil {
+	if _, err := client.createReader(ctx, "audit", "orders.events", StartBeginning()); err != nil {
 		t.Fatal(err)
 	}
 	assertScript("CREATE READER audit FROM orders.events START AT BEGINNING")
 
-	if _, err := client.CreateReader(ctx, "live", "orders.events", StartNow()); err != nil {
+	if _, err := client.createReader(ctx, "live", "orders.events", StartNow()); err != nil {
 		t.Fatal(err)
 	}
 	assertScript("CREATE READER live FROM orders.events START AT NOW")
 
-	if _, err := client.CreateReader(
+	if _, err := client.createReader(
 		ctx, "rewind", "orders.events", StartTimestampNs(1700000000000000000),
 	); err != nil {
 		t.Fatal(err)
 	}
 	assertScript("CREATE READER rewind FROM orders.events START AT TIMESTAMP 1700000000000000000")
 
-	if _, err := client.CreateReader(
+	if _, err := client.createReader(
 		ctx, "resumed", "orders.events", StartCursor(Cursor("abc'def")),
 	); err != nil {
 		t.Fatal(err)
 	}
 	assertScript("CREATE READER resumed FROM orders.events START AT CURSOR 'abc''def'")
 
-	if _, err := client.CreateSubscription(ctx, "team", "orders.events", StartNow()); err != nil {
+	if _, err := client.createSubscription(ctx, "team", "orders.events", StartNow()); err != nil {
 		t.Fatal(err)
 	}
 	assertScript("CREATE SUBSCRIPTION team FROM orders.events START AT NOW")
 
-	if _, err := client.CreateSubscription(ctx, "orders.sub", "orders.events", StartBeginning()); err != nil {
+	if _, err := client.createSubscription(ctx, "orders.sub", "orders.events", StartBeginning()); err != nil {
 		t.Fatal(err)
 	}
 	assertScript("CREATE SUBSCRIPTION orders.sub FROM orders.events START AT BEGINNING")
@@ -94,22 +94,22 @@ func TestWclBuilders(t *testing.T) {
 	}
 	assertScript("CREATE ROLE ops")
 
-	if _, err := client.OpenWriterSession(ctx, "checkout"); err != nil {
+	if _, err := client.openWriterSession(ctx, "checkout"); err != nil {
 		t.Fatal(err)
 	}
 	assertScript("OPEN WRITER SESSION checkout")
 
-	if _, err := client.SeekReader(ctx, "audit", StartNow()); err != nil {
+	if _, err := client.seekReader(ctx, "audit", StartNow()); err != nil {
 		t.Fatal(err)
 	}
 	assertScript("SEEK READER audit TO NOW")
 
-	if _, err := client.DescribeFeed(ctx, "orders.events"); err != nil {
+	if _, err := client.describeFeed(ctx, "orders.events"); err != nil {
 		t.Fatal(err)
 	}
 	assertScript("DESCRIBE FEED orders.events")
 
-	if _, err := client.DescribeSubscription(ctx, "team"); err != nil {
+	if _, err := client.describeSubscription(ctx, "team"); err != nil {
 		t.Fatal(err)
 	}
 	assertScript("DESCRIBE SUBSCRIPTION team")
@@ -119,17 +119,17 @@ func TestWclBuilders(t *testing.T) {
 	}
 	assertScript("RENAME DOMAIN orders TO billing")
 
-	if _, err := client.RenameFeed(ctx, "orders.events", "orders.accepted"); err != nil {
+	if _, err := client.renameFeed(ctx, "orders.events", "orders.accepted"); err != nil {
 		t.Fatal(err)
 	}
 	assertScript("RENAME FEED orders.events TO orders.accepted")
 
-	if _, err := client.DropWriter(ctx, "checkout"); err != nil {
+	if _, err := client.dropWriter(ctx, "checkout"); err != nil {
 		t.Fatal(err)
 	}
 	assertScript("DROP WRITER checkout")
 
-	if _, err := client.ListFeeds(ctx); err != nil {
+	if _, err := client.listFeeds(ctx); err != nil {
 		t.Fatal(err)
 	}
 	assertScript("SHOW FEEDS")
@@ -145,13 +145,13 @@ func TestWclBuildersRejectInvalidNamesLocally(t *testing.T) {
 	ctx := context.Background()
 
 	cases := []func() error{
-		func() error { _, err := client.CreateFeed(ctx, "UPPER.case"); return err },
-		func() error { _, err := client.CreateFeed(ctx, ".leading"); return err },
+		func() error { _, err := client.createFeed(ctx, "UPPER.case"); return err },
+		func() error { _, err := client.createFeed(ctx, ".leading"); return err },
 		func() error { _, err := client.CreateDomain(ctx, "two words"); return err },
-		func() error { _, err := client.CreateWriter(ctx, "bad;name", "orders.events"); return err },
-		func() error { _, err := client.CreateReader(ctx, "a'b", "orders.events", StartNow()); return err },
+		func() error { _, err := client.createWriter(ctx, "bad;name", "orders.events"); return err },
+		func() error { _, err := client.createReader(ctx, "a'b", "orders.events", StartNow()); return err },
 		func() error {
-			_, err := client.CreateSubscription(ctx, "orders-sub", "orders.events", StartNow())
+			_, err := client.createSubscription(ctx, "orders-sub", "orders.events", StartNow())
 			return err
 		},
 		func() error { _, err := client.RenameDomain(ctx, "orders", "INJECTION; DROP"); return err },

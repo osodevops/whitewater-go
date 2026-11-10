@@ -33,10 +33,12 @@ func main() {
 		30*time.Second,
 	)
 
-	if _, err := client.CreateDomain(ctx, "demo"); err != nil {
+	// Everything hangs off the Domain — Feeds are never global.
+	demo, err := client.CreateDomain(ctx, "demo")
+	if err != nil {
 		log.Fatal(err)
 	}
-	if _, err := client.CreateFeed(ctx, "demo.tail"); err != nil {
+	if _, err := demo.CreateFeed(ctx, "tail"); err != nil {
 		log.Fatal(err)
 	}
 
@@ -44,7 +46,7 @@ func main() {
 
 	for {
 		// Blocks up to WaitMs server-side; returns early when records land.
-		page, err := client.Feeds.TemporaryFetch(ctx, "demo.tail",
+		page, err := demo.FeedOps().TemporaryFetch(ctx, "demo.tail",
 			whitewater.TemporaryFetchOptions{
 				Tail:   true,
 				WaitMs: 2500,

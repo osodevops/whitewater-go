@@ -123,13 +123,24 @@ func consumerPage(delivered string, cursors ...string) string {
 	return `{"records": [` + records + `], "delivered_cursor": "` + delivered + `"}`
 }
 
+// usersDomain returns the lazy "users" Domain handle every consumer
+// test binds through.
+func usersDomain(t *testing.T, client *Client) *Domain {
+	t.Helper()
+	domain, err := client.Domain("users")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return domain
+}
+
 func TestConsumerMessagesDeliversAcksAndCloses(t *testing.T) {
 	stub := newConsumerStub()
 	stub.queuedPages = []string{consumerPage("c2", "c1", "c2")}
 	server := httptest.NewServer(stub.handler())
 	defer server.Close()
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
-	feed, err := FeedOf(client, "users.update.request", StringCodec(), BytesCodec())
+	feed, err := FeedOfDomain(usersDomain(t, client), "update.request", StringCodec(), BytesCodec())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +187,7 @@ func TestConsumerRunHandlerFailureRedeliversPage(t *testing.T) {
 	server := httptest.NewServer(stub.handler())
 	defer server.Close()
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
-	feed, err := FeedOf(client, "users.update.request", StringCodec(), BytesCodec())
+	feed, err := FeedOfDomain(usersDomain(t, client), "update.request", StringCodec(), BytesCodec())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +236,7 @@ func TestConsumerStaleSessionReopens(t *testing.T) {
 	server := httptest.NewServer(stub.handler())
 	defer server.Close()
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
-	feed, err := FeedOf(client, "users.update.request", StringCodec(), BytesCodec())
+	feed, err := FeedOfDomain(usersDomain(t, client), "update.request", StringCodec(), BytesCodec())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +283,7 @@ func TestConsumerStartupRefusalFailsFast(t *testing.T) {
 	server := httptest.NewServer(stub.handler())
 	defer server.Close()
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
-	feed, err := FeedOf(client, "users.update.request", StringCodec(), BytesCodec())
+	feed, err := FeedOfDomain(usersDomain(t, client), "update.request", StringCodec(), BytesCodec())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +306,7 @@ func TestConsumerInvalidReaderNameFailsFastNotLoops(t *testing.T) {
 	server := httptest.NewServer(stub.handler())
 	defer server.Close()
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
-	feed, err := FeedOf(client, "users.update.request", StringCodec(), BytesCodec())
+	feed, err := FeedOfDomain(usersDomain(t, client), "update.request", StringCodec(), BytesCodec())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +329,7 @@ func TestConsumerDoubleStartRefused(t *testing.T) {
 	server := httptest.NewServer(stub.handler())
 	defer server.Close()
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
-	feed, err := FeedOf(client, "users.update.request", StringCodec(), BytesCodec())
+	feed, err := FeedOfDomain(usersDomain(t, client), "update.request", StringCodec(), BytesCodec())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +365,7 @@ func TestStoreFindFindByGetOrDefault(t *testing.T) {
 	server := httptest.NewServer(stub.handler())
 	defer server.Close()
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
-	store, err := StoreOf(client, "users.profiles", StringCodec(), JSONCodec[string]())
+	store, err := StoreOfDomain(usersDomain(t, client), "profiles", StringCodec(), JSONCodec[string]())
 	if err != nil {
 		t.Fatal(err)
 	}

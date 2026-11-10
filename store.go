@@ -12,9 +12,9 @@ import (
 // holds no rows. Declare it with named keys, then Put/Get/Delete/
 // Iterate:
 //
-//	spec, _ := whitewater.NewStateStore("accounts.employees")
+//	spec, _ := whitewater.NewStateStore("employees")
 //	spec.AddKey("passport", true).AddKey("department", false)
-//	store, err := client.StateStores.Define(ctx, spec, "")
+//	store, err := domain.DefineStateStore(ctx, spec)
 //
 //	_, _ = store.Put(ctx, []byte("user-1"), []byte("profile-1"),
 //	    map[string]any{"passport": "P111", "department": "eng"}, "")
@@ -39,7 +39,9 @@ func NewStateStore(name string) (*StateStore, error) {
 
 // StateStore returns a thin facade over the node-side StateStore name —
 // rows live on the Nodes; this client holds no state.
-func (c *Client) StateStore(name string) (*StateStore, error) {
+// stateStore binds a StateStore facade — internal; the public route is
+// Domain.StateStore / Domain.DefineStateStore.
+func (c *Client) stateStore(name string) (*StateStore, error) {
 	return newStateStore(c.transport, name)
 }
 
@@ -95,8 +97,8 @@ func (s *StateStore) Name() string { return s.name }
 func (s *StateStore) bound() (*transport, error) {
 	if s.transport == nil {
 		return nil, fmt.Errorf(
-			"unbound StateStore spec — pass it to StateStores.Define " +
-				"or get a bound facade via client.StateStore(name)")
+			"unbound StateStore spec — pass it to Domain.DefineStateStore " +
+				"or get a bound facade via Domain.StateStore(name)")
 	}
 	return s.transport, nil
 }
@@ -362,7 +364,7 @@ func (s *StateStore) Drop(ctx context.Context) (ControlExecution, error) {
 
 // StateStoresClient is the collection-level facade: declaration and
 // drop. Row operations live on the bound StateStore returned by
-// client.StateStore(name).
+// Domain.StateStore(name).
 type StateStoresClient struct {
 	transport *transport
 }

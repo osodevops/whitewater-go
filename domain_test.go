@@ -185,7 +185,7 @@ func TestDomain(t *testing.T) {
 	}
 
 	// Cross-domain feeds refuse locally — the check lands at Open.
-	other, err := client.Feed("other.metrics")
+	other, err := client.feed("other.metrics")
 	if err != nil {
 		t.Fatal(err)
 	}

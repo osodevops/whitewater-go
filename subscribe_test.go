@@ -137,7 +137,7 @@ func TestLoadPagesUntilEmptyAndFillsTheStore(t *testing.T) {
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
 
 	var received []Record
-	loaded, err := client.Feeds.Load(
+	loaded, err := client.feeds.Load(
 		context.Background(), "hr.employees", StartBeginning(),
 		func(records []Record) error {
 			received = append(received, records...)
@@ -170,7 +170,7 @@ func TestLoadSeeksByEventTimeThenContinuesOnCursor(t *testing.T) {
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
 
 	var sink [][]Record
-	_, err := client.Feeds.Load(
+	_, err := client.feeds.Load(
 		context.Background(), "hr.employees", StartTimestampNs(1697040000000000000),
 		func(records []Record) error {
 			sink = append(sink, records)
@@ -205,8 +205,8 @@ func TestSubscribeOpensDeliversAcksAndCloses(t *testing.T) {
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
 
 	delivered := make(chan []Record, 1)
-	sub := client.Subscribe(context.Background(), "hr.view", "hr.employees",
-		StartBeginning(),
+	sub := client.subscribe(context.Background(), "hr.view", "hr.employees",
+		StartBeginning(), subscribeCapacity,
 		func(records []Record) error {
 			delivered <- records
 			return nil

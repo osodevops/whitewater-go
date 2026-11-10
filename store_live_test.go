@@ -54,7 +54,7 @@ func TestLiveNamedKeyStoreLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	spec.AddKey("passport", true).AddKey("department", false)
-	store, err := client.StateStores.Define(ctx, spec, "")
+	store, err := client.stateStores.Define(ctx, spec, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestLiveNamedKeyStoreLifecycle(t *testing.T) {
 		t.Fatalf("cleared get_by rows = %d", len(empty.Rows))
 	}
 
-	if _, err := client.StateStores.Drop(ctx, name); err != nil {
+	if _, err := client.stateStores.Drop(ctx, name); err != nil {
 		t.Fatal(err)
 	}
 }

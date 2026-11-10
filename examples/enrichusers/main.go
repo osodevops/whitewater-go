@@ -14,9 +14,9 @@
 // server-side cursor across restarts. No offset management, ever.
 //
 // Prerequisites (against the dev cluster): domain "users", feeds
-// users.update.request / users.update.enriched.request /
-// users.update.dlq, StateStore users.profiles with named key "user_id",
-// manual store users.stats.
+// update.request / update.enriched.request / update.dlq inside it,
+// StateStore users.profiles with named key "user_id", manual store
+// users.stats.
 //
 // Replay honesty: between "enriched append committed" and "input acked"
 // a crash replays the input -- so every effect carries a RequestID
@@ -95,23 +95,29 @@ func main() {
 	)
 
 	var err error
-	in, err := whitewater.FeedFor[UpdateRequest](client, "users.update.request")
+	// Every Feed and Store binds inside the "users" Domain — relative
+	// names compose; nothing is global.
+	domain, err := client.Domain("users")
 	if err != nil {
 		log.Fatal(err)
 	}
-	out, err := whitewater.FeedFor[EnrichedUpdate](client, "users.update.enriched.request")
+	in, err := whitewater.FeedForDomain[UpdateRequest](domain, "update.request")
 	if err != nil {
 		log.Fatal(err)
 	}
-	dlq, err := whitewater.FeedFor[DeadLetter](client, "users.update.dlq")
+	out, err := whitewater.FeedForDomain[EnrichedUpdate](domain, "update.enriched.request")
 	if err != nil {
 		log.Fatal(err)
 	}
-	users, err = whitewater.StoreFor[UserProfile](client, "users.profiles")
+	dlq, err := whitewater.FeedForDomain[DeadLetter](domain, "dlq")
 	if err != nil {
 		log.Fatal(err)
 	}
-	counters, err = whitewater.StoreFor[int64](client, "users.stats")
+	users, err = whitewater.StoreForDomain[UserProfile](domain, "profiles")
+	if err != nil {
+		log.Fatal(err)
+	}
+	counters, err = whitewater.StoreForDomain[int64](domain, "stats")
 	if err != nil {
 		log.Fatal(err)
 	}

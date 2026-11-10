@@ -6,12 +6,13 @@ RF3-replicated, Fjall-backed, and queryable from any Node. The SDK's
 projection, and every operation is an HTTP call with freshness evidence.
 
 ```go
-spec, _ := whitewater.NewStateStore("accounts.employees")
+accounts, _ := client.CreateDomain(ctx, "accounts")
+spec, _ := whitewater.NewStateStore("employees")     // -> accounts.employees
 spec.AddKey("passport", true).            // unique: one row per value
       AddKey("department", false)         // non-unique: value -> many rows
 
-store, err := client.StateStores.Define(ctx, spec, "")
-//                                       source "" = manual store
+store, err := accounts.DefineStateStore(ctx, spec, nil)
+//                                            nil source = manual store
 ```
 
 `AddKey` records declaration intent used by `Define` — named keys are
@@ -31,9 +32,9 @@ type Profile struct {
 }
 
 // String keys + JSON payloads — codecs inferred from the types.
-profiles, _ := whitewater.StoreFor[Profile](client, "accounts.employees")
+profiles, _ := whitewater.StoreForDomain[Profile](accounts, "employees")
 // …or explicit codecs — protobuf/msgpack/custom via FuncCodec:
-//   StoreOf(client, "accounts.employees", StringCodec(), proto)
+//   StoreOfDomain(accounts, "employees", StringCodec(), proto)
 
 _, err = profiles.Put(ctx, "user-1", profile,
     map[string]any{"passport": "P111"}, "")
@@ -47,8 +48,8 @@ raw := whitewater.RebindStore(profiles, whitewater.StringCodec(),
     whitewater.BytesCodec())
 ```
 
-`client.Store(name)` binds the default `Store[string, []byte]`; the
-byte-level `client.StateStore(name)` facade below remains for raw
+`domain.Store(relative)` binds the default `Store[string, []byte]`; the
+byte-level `domain.StateStore(relative)` facade below remains for raw
 access and declaration.
 
 ## Writing
@@ -110,7 +111,7 @@ freshness evidence.
 
 ```go
 _, err = store.Clear(ctx, "")                 // one journaled ClearAll
-_, err = client.StateStores.Drop(ctx, name)   // or store.Drop(ctx)
+_, err = accounts.DropStateStore(ctx, "employees")   // or store.Drop(ctx)
 ```
 
 - `Clear` empties the store as one durable, idempotent mutation;
@@ -118,8 +119,9 @@ _, err = client.StateStores.Drop(ctx, name)   // or store.Drop(ctx)
 - `Drop` tombstones the definition — the name cannot be recreated and
   every data path refuses. Rows already applied on replicas remain
   until a bounded reclaim pass.
-- Feed-sourced stores: `client.StateStores.Define(ctx, spec,
-  "accounts.events")` materializes committed Feed history.
+- Feed-sourced stores: `accounts.DefineStateStore(ctx, spec,
+  whitewater.Rel("events"))` materializes committed Feed history — the
+  source Feed may cross Domains via a `*Feed` handle or `Abs(...)`.
 
 ### Feed-sourced named keys
 
@@ -128,10 +130,10 @@ committed source record maps to typed lookup values. Every key carries
 an `Extractor`:
 
 ```go
-spec, _ := whitewater.NewStateStore("accounts.tagged")
+spec, _ = whitewater.NewStateStore("tagged")
 spec.AddKey("passport", true, whitewater.MetadataExtractor("pp"))
 spec.AddKey("department", false, whitewater.JsonExtractor("dept"))
-store, err := client.StateStores.Define(ctx, spec, "accounts.events")
+store, err = accounts.DefineStateStore(ctx, spec, whitewater.Rel("events"))
 ```
 
 `whitewater.KeyExtractor()` reads the record's key,
@@ -178,7 +180,7 @@ c.Commands(ctx, []map[string]any{{
 | `AddKey` #11 / duplicate / blank | `panic` | Declaration contract (10-key bound, distinct names). |
 | `Define` spec + `source` + bare named keys | `error` | Feed-sourced keys need an `Extractor` — checked before the call. |
 | `Define` manual spec + `Extractor` | `error` | Extractors apply to feed-sourced stores only. |
-| Data op on unbound spec | `error` | `NewStateStore` builds a spec; bind via `Define` or `client.StateStore(name)`. |
+| Data op on unbound spec | `error` | `NewStateStore` builds a spec; bind via `Domain.DefineStateStore` or `Domain.StateStore(name)`. |
 | Undeclared named key / missing store | `*Error` 400 | Server-side contract — fix the declaration. |
 | `mutationID` reused differently | `*Error` 409 | Retry with the original contents or a fresh ID. |
 | No quorum / replica down | `*Error` 503 | Retry — the journal needs a quorum to commit. |

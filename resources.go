@@ -84,13 +84,18 @@ func resourceName(name string) (string, error) {
 // Names are validated before interpolation, so a bad value fails locally
 // rather than reaching the Control Plane.
 
-// CreateDomain executes CREATE DOMAIN <name>.
-func (c *Client) CreateDomain(ctx context.Context, name string) (ControlExecution, error) {
+// CreateDomain executes CREATE DOMAIN <name> and returns the Domain
+// handle — the front door every Feed, Writer, Reader, Subscription,
+// Pipe, and StateStore hangs from.
+func (c *Client) CreateDomain(ctx context.Context, name string) (*Domain, error) {
 	n, err := dottedName(name)
 	if err != nil {
-		return ControlExecution{}, err
+		return nil, err
 	}
-	return c.WCL(ctx, "CREATE DOMAIN "+n)
+	if _, err := c.WCL(ctx, "CREATE DOMAIN "+n); err != nil {
+		return nil, err
+	}
+	return &Domain{client: c, name: n}, nil
 }
 
 // SetDomainSchema executes SET SCHEMA ON DOMAIN <domain> — declares
@@ -101,9 +106,10 @@ func (c *Client) SetDomainSchema(
 	return c.setSchema(ctx, "domain", domain, schema)
 }
 
-// SetFeedSchema executes SET SCHEMA ON FEED <feed> — overrides the
-// Domain's declared schema for the named sides only.
-func (c *Client) SetFeedSchema(
+// setFeedSchema executes SET SCHEMA ON FEED <feed> — overrides the
+// Domain's declared schema for the named sides only. The app-facing
+// route is Domain.SetFeedSchema, which resolves the name in-domain.
+func (c *Client) setFeedSchema(
 	ctx context.Context, feed string, schema *FeedSchema,
 ) (ControlExecution, error) {
 	return c.setSchema(ctx, "feed", feed, schema)
@@ -114,9 +120,10 @@ func (c *Client) ClearDomainSchema(ctx context.Context, domain string) (ControlE
 	return c.clearSchema(ctx, "domain", domain)
 }
 
-// ClearFeedSchema executes DROP SCHEMA ON FEED <feed> — the Feed
-// reverts to inheriting its Domain's declared schema.
-func (c *Client) ClearFeedSchema(ctx context.Context, feed string) (ControlExecution, error) {
+// clearFeedSchema executes DROP SCHEMA ON FEED <feed> — the Feed
+// reverts to inheriting its Domain's declared schema. The app-facing
+// route is Domain.ClearFeedSchema.
+func (c *Client) clearFeedSchema(ctx context.Context, feed string) (ControlExecution, error) {
 	return c.clearSchema(ctx, "feed", feed)
 }
 
@@ -148,8 +155,9 @@ func (c *Client) clearSchema(ctx context.Context, kind, name string) (ControlExe
 	}})
 }
 
-// CreateFeed executes CREATE FEED <dotted.name>.
-func (c *Client) CreateFeed(ctx context.Context, name string) (ControlExecution, error) {
+// createFeed executes CREATE FEED <dotted.name> — internal; the public
+// route is Domain.CreateFeed, which resolves the name in-domain.
+func (c *Client) createFeed(ctx context.Context, name string) (ControlExecution, error) {
 	n, err := dottedName(name)
 	if err != nil {
 		return ControlExecution{}, err
@@ -157,8 +165,9 @@ func (c *Client) CreateFeed(ctx context.Context, name string) (ControlExecution,
 	return c.WCL(ctx, "CREATE FEED "+n)
 }
 
-// CreateWriter executes CREATE WRITER <name> TO <feed>.
-func (c *Client) CreateWriter(ctx context.Context, name, feed string) (ControlExecution, error) {
+// createWriter executes CREATE WRITER <name> TO <feed> — internal;
+// the public route is Domain.CreateWriter / Domain.Writer.
+func (c *Client) createWriter(ctx context.Context, name, feed string) (ControlExecution, error) {
 	n, err := resourceName(name)
 	if err != nil {
 		return ControlExecution{}, err
@@ -170,16 +179,18 @@ func (c *Client) CreateWriter(ctx context.Context, name, feed string) (ControlEx
 	return c.WCL(ctx, "CREATE WRITER "+n+" TO "+f)
 }
 
-// CreateReader executes CREATE READER <name> FROM <feed> START AT <start>.
-func (c *Client) CreateReader(
+// createReader executes CREATE READER <name> FROM <feed> START AT
+// <start> — internal; the public route is Domain.CreateReader.
+func (c *Client) createReader(
 	ctx context.Context, name, feed string, start ReaderStart,
 ) (ControlExecution, error) {
 	return c.createFrom(ctx, "READER", name, feed, start)
 }
 
-// CreateSubscription executes CREATE SUBSCRIPTION <name> FROM <feed>
-// START AT <start>.
-func (c *Client) CreateSubscription(
+// createSubscription executes CREATE SUBSCRIPTION <name> FROM <feed>
+// START AT <start> — internal; the public route is
+// Domain.CreateSubscription.
+func (c *Client) createSubscription(
 	ctx context.Context, name, feed string, start ReaderStart,
 ) (ControlExecution, error) {
 	return c.createFrom(ctx, "SUBSCRIPTION", name, feed, start)
@@ -210,7 +221,7 @@ func (c *Client) CreateRole(ctx context.Context, name string) (ControlExecution,
 
 // OpenWriterSession executes OPEN WRITER SESSION <name>; the returned
 // epoch feeds Client.Writer.
-func (c *Client) OpenWriterSession(ctx context.Context, writer string) (ControlExecution, error) {
+func (c *Client) openWriterSession(ctx context.Context, writer string) (ControlExecution, error) {
 	n, err := resourceName(writer)
 	if err != nil {
 		return ControlExecution{}, err
@@ -220,7 +231,7 @@ func (c *Client) OpenWriterSession(ctx context.Context, writer string) (ControlE
 
 // SeekReader executes SEEK READER <name> TO <start>, repositioning a
 // durable Reader.
-func (c *Client) SeekReader(
+func (c *Client) seekReader(
 	ctx context.Context, reader string, start ReaderStart,
 ) (ControlExecution, error) {
 	n, err := resourceName(reader)
@@ -271,22 +282,22 @@ func (c *Client) DescribeDomain(ctx context.Context, name string) (ControlExecut
 }
 
 // DescribeFeed executes DESCRIBE FEED <dotted.name>.
-func (c *Client) DescribeFeed(ctx context.Context, name string) (ControlExecution, error) {
+func (c *Client) describeFeed(ctx context.Context, name string) (ControlExecution, error) {
 	return c.describe(ctx, "FEED", name, true)
 }
 
 // DescribeWriter executes DESCRIBE WRITER <name>.
-func (c *Client) DescribeWriter(ctx context.Context, name string) (ControlExecution, error) {
+func (c *Client) describeWriter(ctx context.Context, name string) (ControlExecution, error) {
 	return c.describe(ctx, "WRITER", name, false)
 }
 
 // DescribeReader executes DESCRIBE READER <name>.
-func (c *Client) DescribeReader(ctx context.Context, name string) (ControlExecution, error) {
+func (c *Client) describeReader(ctx context.Context, name string) (ControlExecution, error) {
 	return c.describe(ctx, "READER", name, false)
 }
 
 // DescribeSubscription executes DESCRIBE SUBSCRIPTION <name>.
-func (c *Client) DescribeSubscription(ctx context.Context, name string) (ControlExecution, error) {
+func (c *Client) describeSubscription(ctx context.Context, name string) (ControlExecution, error) {
 	return c.describe(ctx, "SUBSCRIPTION", name, false)
 }
 
@@ -301,22 +312,22 @@ func (c *Client) RenameDomain(ctx context.Context, current, renamed string) (Con
 }
 
 // RenameFeed executes RENAME FEED <current> TO <renamed>.
-func (c *Client) RenameFeed(ctx context.Context, current, renamed string) (ControlExecution, error) {
+func (c *Client) renameFeed(ctx context.Context, current, renamed string) (ControlExecution, error) {
 	return c.rename(ctx, "FEED", current, renamed, true)
 }
 
 // RenameWriter executes RENAME WRITER <current> TO <renamed>.
-func (c *Client) RenameWriter(ctx context.Context, current, renamed string) (ControlExecution, error) {
+func (c *Client) renameWriter(ctx context.Context, current, renamed string) (ControlExecution, error) {
 	return c.rename(ctx, "WRITER", current, renamed, false)
 }
 
 // RenameReader executes RENAME READER <current> TO <renamed>.
-func (c *Client) RenameReader(ctx context.Context, current, renamed string) (ControlExecution, error) {
+func (c *Client) renameReader(ctx context.Context, current, renamed string) (ControlExecution, error) {
 	return c.rename(ctx, "READER", current, renamed, false)
 }
 
 // RenameSubscription executes RENAME SUBSCRIPTION <current> TO <renamed>.
-func (c *Client) RenameSubscription(ctx context.Context, current, renamed string) (ControlExecution, error) {
+func (c *Client) renameSubscription(ctx context.Context, current, renamed string) (ControlExecution, error) {
 	return c.rename(ctx, "SUBSCRIPTION", current, renamed, false)
 }
 
@@ -331,22 +342,22 @@ func (c *Client) DropDomain(ctx context.Context, name string) (ControlExecution,
 }
 
 // DropFeed executes DROP FEED <dotted.name>.
-func (c *Client) DropFeed(ctx context.Context, name string) (ControlExecution, error) {
+func (c *Client) dropFeed(ctx context.Context, name string) (ControlExecution, error) {
 	return c.drop(ctx, "FEED", name, true)
 }
 
 // DropWriter executes DROP WRITER <name>.
-func (c *Client) DropWriter(ctx context.Context, name string) (ControlExecution, error) {
+func (c *Client) dropWriter(ctx context.Context, name string) (ControlExecution, error) {
 	return c.drop(ctx, "WRITER", name, false)
 }
 
 // DropReader executes DROP READER <name>.
-func (c *Client) DropReader(ctx context.Context, name string) (ControlExecution, error) {
+func (c *Client) dropReader(ctx context.Context, name string) (ControlExecution, error) {
 	return c.drop(ctx, "READER", name, false)
 }
 
 // DropSubscription executes DROP SUBSCRIPTION <name>.
-func (c *Client) DropSubscription(ctx context.Context, name string) (ControlExecution, error) {
+func (c *Client) dropSubscription(ctx context.Context, name string) (ControlExecution, error) {
 	return c.drop(ctx, "SUBSCRIPTION", name, false)
 }
 
@@ -361,22 +372,22 @@ func (c *Client) ListDomains(ctx context.Context) (ControlExecution, error) {
 }
 
 // ListFeeds executes SHOW FEEDS.
-func (c *Client) ListFeeds(ctx context.Context) (ControlExecution, error) {
+func (c *Client) listFeeds(ctx context.Context) (ControlExecution, error) {
 	return c.WCL(ctx, "SHOW FEEDS")
 }
 
 // ListWriters executes SHOW WRITERS.
-func (c *Client) ListWriters(ctx context.Context) (ControlExecution, error) {
+func (c *Client) listWriters(ctx context.Context) (ControlExecution, error) {
 	return c.WCL(ctx, "SHOW WRITERS")
 }
 
 // ListReaders executes SHOW READERS.
-func (c *Client) ListReaders(ctx context.Context) (ControlExecution, error) {
+func (c *Client) listReaders(ctx context.Context) (ControlExecution, error) {
 	return c.WCL(ctx, "SHOW READERS")
 }
 
 // ListSubscriptions executes SHOW SUBSCRIPTIONS.
-func (c *Client) ListSubscriptions(ctx context.Context) (ControlExecution, error) {
+func (c *Client) listSubscriptions(ctx context.Context) (ControlExecution, error) {
 	return c.WCL(ctx, "SHOW SUBSCRIPTIONS")
 }
 

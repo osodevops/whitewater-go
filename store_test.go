@@ -87,7 +87,7 @@ func TestDefineEmitsNamedKeysAndBindsTheFacade(t *testing.T) {
 		t.Fatal(err)
 	}
 	spec.AddKey("passport", true).AddKey("department", false)
-	store, err := client.StateStores.Define(context.Background(), spec, "")
+	store, err := client.stateStores.Define(context.Background(), spec, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestDefineFeedSourcedNamedKeysNeedExtractors(t *testing.T) {
 	// A feed-sourced named key without a projection is a declaration bug.
 	spec, _ := NewStateStore("accounts.s")
 	spec.AddKey("k", false)
-	if _, err := client.StateStores.Define(
+	if _, err := client.stateStores.Define(
 		context.Background(), spec, "accounts.events"); err == nil ||
 		!strings.Contains(err.Error(), "require an extractor") {
 		t.Fatalf("expected extractor refusal, got %v", err)
@@ -136,7 +136,7 @@ func TestDefineFeedSourcedNamedKeysNeedExtractors(t *testing.T) {
 	// An extractor on a manual store is refused — Puts carry the values.
 	manual, _ := NewStateStore("accounts.m")
 	manual.AddKey("k", false, MetadataExtractor("pp"))
-	if _, err := client.StateStores.Define(
+	if _, err := client.stateStores.Define(
 		context.Background(), manual, ""); err == nil ||
 		!strings.Contains(err.Error(), "manual store") {
 		t.Fatalf("expected manual-store extractor refusal, got %v", err)
@@ -152,7 +152,7 @@ func TestDefineFeedSourcedEmitsExtractors(t *testing.T) {
 	spec, _ := NewStateStore("accounts.tagged")
 	spec.AddKey("passport", true, MetadataExtractor("pp"))
 	spec.AddKey("department", false, JsonExtractor("dept"))
-	if _, err := client.StateStores.Define(
+	if _, err := client.stateStores.Define(
 		context.Background(), spec, "accounts.events"); err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func TestPutGetByDeleteCarryWireShapes(t *testing.T) {
 	server := httptest.NewServer(stub.handler())
 	defer server.Close()
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
-	store, err := client.StateStore("accounts.employees")
+	store, err := client.stateStore("accounts.employees")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +289,7 @@ func TestIteratePagesUntilExhaustedThenClearAndDrop(t *testing.T) {
 	server := httptest.NewServer(stub.handler())
 	defer server.Close()
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
-	store, _ := client.StateStore("accounts.employees")
+	store, _ := client.stateStore("accounts.employees")
 	ctx := context.Background()
 
 	var keys []string

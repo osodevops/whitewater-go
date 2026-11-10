@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -138,6 +139,65 @@ func (s *feedStub) count(path string) int {
 	return n
 }
 
+// typedFeed binds a typed Feed through the Domain that owns name —
+// the Domain-first daily path used across these tests.
+func typedFeed[V any](c *Client, name string) (*Feed[string, V], error) {
+	dot := strings.IndexByte(name, '.')
+	if dot <= 0 {
+		return nil, fmt.Errorf("feed %q is not domain-qualified", name)
+	}
+	domain, err := c.Domain(name[:dot])
+	if err != nil {
+		return nil, err
+	}
+	return FeedForDomain[V](domain, name[dot+1:])
+}
+
+// typedFeedOf binds a Feed under explicit codecs through the Domain
+// that owns name.
+func typedFeedOf[K comparable, V any](
+	c *Client, name string, keyCodec Codec[K], valueCodec Codec[V],
+) (*Feed[K, V], error) {
+	dot := strings.IndexByte(name, '.')
+	if dot <= 0 {
+		return nil, fmt.Errorf("feed %q is not domain-qualified", name)
+	}
+	domain, err := c.Domain(name[:dot])
+	if err != nil {
+		return nil, err
+	}
+	return FeedOfDomain[K, V](domain, name[dot+1:], keyCodec, valueCodec)
+}
+
+// typedStoreOf binds a Store under explicit codecs through the Domain
+// that owns name.
+func typedStoreOf[K comparable, V any](
+	c *Client, name string, keyCodec Codec[K], valueCodec Codec[V],
+) (*Store[K, V], error) {
+	dot := strings.IndexByte(name, '.')
+	if dot <= 0 {
+		return nil, fmt.Errorf("store %q is not domain-qualified", name)
+	}
+	domain, err := c.Domain(name[:dot])
+	if err != nil {
+		return nil, err
+	}
+	return StoreOfDomain[K, V](domain, name[dot+1:], keyCodec, valueCodec)
+}
+
+// typedStore binds a typed Store through the Domain that owns name.
+func typedStore[V any](c *Client, name string) (*Store[string, V], error) {
+	dot := strings.IndexByte(name, '.')
+	if dot <= 0 {
+		return nil, fmt.Errorf("store %q is not domain-qualified", name)
+	}
+	domain, err := c.Domain(name[:dot])
+	if err != nil {
+		return nil, err
+	}
+	return StoreForDomain[V](domain, name[dot+1:])
+}
+
 func jsonRecord(cursor, key, payload string) map[string]any {
 	record := recordJSON(cursor, key)
 	record["payload_base64"] = b64(payload)
@@ -146,10 +206,10 @@ func jsonRecord(cursor, key, payload string) map[string]any {
 
 func TestFeedOfValidatesName(t *testing.T) {
 	client := NewClient("test-key", []string{"http://127.0.0.1:1"}, time.Second)
-	if _, err := FeedFor[orderPayload](client, "Bad Name"); err == nil {
+	if _, err := typedFeed[orderPayload](client, "Bad Name"); err == nil {
 		t.Fatal("expected a name refusal")
 	}
-	if _, err := FeedFor[orderPayload](client, "orders.events"); err != nil {
+	if _, err := typedFeed[orderPayload](client, "orders.events"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -164,7 +224,7 @@ func TestFeedRecordsDecodesJSONAndPreservesFields(t *testing.T) {
 	defer server.Close()
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
 
-	orders, err := FeedFor[orderPayload](client, "orders.events")
+	orders, err := typedFeed[orderPayload](client, "orders.events")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +262,7 @@ func TestFeedFetchDecodesTemporaryPage(t *testing.T) {
 	defer server.Close()
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
 
-	orders, _ := FeedFor[orderPayload](client, "orders.events")
+	orders, _ := typedFeed[orderPayload](client, "orders.events")
 	page, err := orders.Fetch(context.Background(), TemporaryFetchOptions{Limit: 4})
 	if err != nil {
 		t.Fatal(err)
@@ -227,7 +287,7 @@ func TestFeedLoadDeliversDecodedBatches(t *testing.T) {
 	defer server.Close()
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
 
-	orders, _ := FeedFor[orderPayload](client, "orders.events")
+	orders, _ := typedFeed[orderPayload](client, "orders.events")
 	var seen []orderPayload
 	loaded, err := orders.Load(
 		context.Background(), StartBeginning(),
@@ -251,7 +311,7 @@ func TestFeedWriterDeclaresOpensAndEncodes(t *testing.T) {
 	defer server.Close()
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
 
-	orders, _ := FeedFor[orderPayload](client, "orders.events")
+	orders, _ := typedFeed[orderPayload](client, "orders.events")
 	writer, err := orders.Writer(context.Background(), "ingest")
 	if err != nil {
 		t.Fatal(err)
@@ -266,8 +326,8 @@ func TestFeedWriterDeclaresOpensAndEncodes(t *testing.T) {
 
 	wcl := stub.bodiesFor("/v1/admin/wcl")
 	if len(wcl) != 2 ||
-		wcl[0]["script"] != "CREATE WRITER ingest TO orders.events" ||
-		wcl[1]["script"] != "OPEN WRITER SESSION ingest" {
+		wcl[0]["script"] != "CREATE WRITER orders.ingest TO orders.events" ||
+		wcl[1]["script"] != "OPEN WRITER SESSION orders.ingest" {
 		t.Fatalf("wcl = %v", wcl)
 	}
 	appends := stub.bodiesFor("/v1/writers/append")
@@ -275,7 +335,7 @@ func TestFeedWriterDeclaresOpensAndEncodes(t *testing.T) {
 		t.Fatalf("append calls = %d", len(appends))
 	}
 	body := appends[0]
-	if body["writer"] != "ingest" || body["session_epoch"] != float64(42) {
+	if body["writer"] != "orders.ingest" || body["session_epoch"] != float64(42) {
 		t.Fatalf("append body = %v", body)
 	}
 	if body["key_base64"] != b64("order-1") {
@@ -302,7 +362,7 @@ func TestFeedWriterAppendAllAndKeylessEvent(t *testing.T) {
 	defer server.Close()
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
 
-	orders, _ := FeedFor[orderPayload](client, "orders.events")
+	orders, _ := typedFeed[orderPayload](client, "orders.events")
 	writer, _ := orders.Writer(context.Background(), "ingest")
 	eventTime := int64(1697040000000000000)
 	key := "order-9"
@@ -351,7 +411,7 @@ func TestFeedReaderFetchesDecodesAcks(t *testing.T) {
 	defer server.Close()
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
 
-	orders, _ := FeedFor[orderPayload](client, "orders.events")
+	orders, _ := typedFeed[orderPayload](client, "orders.events")
 	reader, err := orders.Reader(context.Background(), "audit", 64)
 	if err != nil {
 		t.Fatal(err)
@@ -390,7 +450,7 @@ func TestFeedAdHocAppendEncodes(t *testing.T) {
 	defer server.Close()
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
 
-	orders, _ := FeedFor[orderPayload](client, "orders.events")
+	orders, _ := typedFeed[orderPayload](client, "orders.events")
 	if _, err := orders.Append(
 		context.Background(), "ws-1", 7, 3, "order-2",
 		orderPayload{ID: "order-2", Total: 11}); err != nil {
@@ -419,7 +479,7 @@ func TestRebindFeedReadsRawWithoutWireCall(t *testing.T) {
 	defer server.Close()
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
 
-	orders, _ := FeedFor[orderPayload](client, "orders.events")
+	orders, _ := typedFeed[orderPayload](client, "orders.events")
 	raw := RebindFeed(orders, StringCodec(), BytesCodec())
 	messages, err := raw.Records(context.Background(), 1, nil)
 	if err != nil {
@@ -451,7 +511,7 @@ func TestFuncCodecRoundTripsAndFeedsThrough(t *testing.T) {
 	defer server.Close()
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
 
-	feed, err := FeedOf(client, "orders.events", StringCodec(), xmlish)
+	feed, err := typedFeedOf(client, "orders.events", StringCodec(), xmlish)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -473,7 +533,7 @@ func TestDecodeFailureSurfaces(t *testing.T) {
 	defer server.Close()
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
 
-	orders, _ := FeedFor[orderPayload](client, "orders.events")
+	orders, _ := typedFeed[orderPayload](client, "orders.events")
 	if _, err := orders.Records(
 		context.Background(), 1, nil); err == nil ||
 		!strings.Contains(err.Error(), "decode") {
@@ -490,7 +550,7 @@ func TestDefaultFeedBindsStringKeysAndRawPayloads(t *testing.T) {
 	defer server.Close()
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
 
-	feed, err := client.Feed("orders.events")
+	feed, err := client.feed("orders.events")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -556,7 +616,7 @@ func TestStoreTypedPutGetAndNamedLookup(t *testing.T) {
 	defer server.Close()
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
 
-	store, err := StoreFor[orderPayload](client, "accounts.employees")
+	store, err := typedStore[orderPayload](client, "accounts.employees")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -606,7 +666,7 @@ func TestStoreTypedIterateAndDeleteAndRebind(t *testing.T) {
 	defer server.Close()
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
 
-	store, err := StoreFor[orderPayload](client, "accounts.employees")
+	store, err := typedStore[orderPayload](client, "accounts.employees")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -648,7 +708,7 @@ func TestStoreEncodeFailureSurfaces(t *testing.T) {
 		func(v orderPayload) ([]byte, error) { return nil, errTestCodec },
 		func(b []byte) (orderPayload, error) { return orderPayload{}, errTestCodec })
 	client := NewClient("test-key", []string{"http://127.0.0.1:1"}, time.Second)
-	store, err := StoreOf(client, "accounts.employees", StringCodec(), failing)
+	store, err := typedStoreOf(client, "accounts.employees", StringCodec(), failing)
 	if err != nil {
 		t.Fatal(err)
 	}

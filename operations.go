@@ -40,7 +40,7 @@ type Pipe struct {
 
 // Pipe binds a declared Pipe for lifecycle operations:
 // Describe/Pause/Resume/Drop.
-func (c *Client) Pipe(name string) *Pipe {
+func (c *Client) pipe(name string) *Pipe {
 	return &Pipe{client: c, name: name}
 }
 
@@ -121,7 +121,7 @@ func (p *Pipe) lifecycle(ctx context.Context, command string) error {
 }
 
 // Pipes returns the declared Pipe catalog (SHOW PIPES).
-func (c *Client) Pipes(ctx context.Context) ([]PipeInfo, error) {
+func (c *Client) pipes(ctx context.Context) ([]PipeInfo, error) {
 	execution, err := c.Commands(ctx, []map[string]any{{
 		"command": "show", "kind": "pipes",
 	}})
@@ -248,7 +248,7 @@ type IndexPage struct {
 // QueryIndex queries a replicated Index by predicate — exact, prefix,
 // or range over typed values. strict waits for the committed target
 // rather than answering stale.
-func (c *Client) QueryIndex(
+func (c *Client) queryIndex(
 	ctx context.Context,
 	index string,
 	predicate IndexPredicate,

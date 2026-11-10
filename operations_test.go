@@ -105,7 +105,7 @@ func operationsStub(t *testing.T) (*Client, *[]string, *[]string) {
 
 func TestPipeDescribeDecodesTheCatalogRow(t *testing.T) {
 	client, _, bodies := operationsStub(t)
-	info, err := client.Pipe("orders.relay").Describe(context.Background())
+	info, err := client.pipe("orders.relay").Describe(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestPipeDescribeDecodesTheCatalogRow(t *testing.T) {
 
 func TestPipeLifecyclePostsTheTypedVerbs(t *testing.T) {
 	client, paths, bodies := operationsStub(t)
-	pipe := client.Pipe("orders.relay")
+	pipe := client.pipe("orders.relay")
 	ctx := context.Background()
 	if err := pipe.Pause(ctx); err != nil {
 		t.Fatal(err)
@@ -170,7 +170,7 @@ func TestPipeLifecyclePostsTheTypedVerbs(t *testing.T) {
 
 func TestPipesListsTheCatalog(t *testing.T) {
 	client, _, bodies := operationsStub(t)
-	pipes, err := client.Pipes(context.Background())
+	pipes, err := client.pipes(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +271,7 @@ func TestHotKeysDecodeDominantKeyEvidence(t *testing.T) {
 
 func TestQueryIndexRangeFlattensBoundsAndDecodesRows(t *testing.T) {
 	client, paths, bodies := operationsStub(t)
-	page, err := client.QueryIndex(
+	page, err := client.queryIndex(
 		context.Background(),
 		"crm.byregion",
 		IndexRange([]any{"emea"}, InclusiveBound(0), ExclusiveBound(99)),
@@ -303,7 +303,7 @@ func TestQueryIndexRangeFlattensBoundsAndDecodesRows(t *testing.T) {
 
 func TestQueryIndexExactCarriesEveryTypedKind(t *testing.T) {
 	client, _, bodies := operationsStub(t)
-	_, err := client.QueryIndex(
+	_, err := client.queryIndex(
 		context.Background(),
 		"crm.byregion",
 		IndexExact("emea", 42, true, nil, []byte{1, 2}),
@@ -332,7 +332,7 @@ func TestQueryIndexExactCarriesEveryTypedKind(t *testing.T) {
 func TestQueryIndexPrefixOmitsPartialTextWhenAbsent(t *testing.T) {
 	client, _, bodies := operationsStub(t)
 	ctx := context.Background()
-	if _, err := client.QueryIndex(
+	if _, err := client.queryIndex(
 		ctx, "crm.byregion", IndexPrefix([]any{"emea"}, ""), 0, false); err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +344,7 @@ func TestQueryIndexPrefixOmitsPartialTextWhenAbsent(t *testing.T) {
 	if _, present := first["partial_text"]; present {
 		t.Fatal("partial_text must be omitted when empty")
 	}
-	if _, err := client.QueryIndex(
+	if _, err := client.queryIndex(
 		ctx, "crm.byregion", IndexPrefix([]any{"emea"}, "gold"), 0, false); err != nil {
 		t.Fatal(err)
 	}
@@ -357,7 +357,7 @@ func TestQueryIndexPrefixOmitsPartialTextWhenAbsent(t *testing.T) {
 
 func TestQueryIndexRejectsUnsupportedValueTypes(t *testing.T) {
 	client, _, _ := operationsStub(t)
-	_, err := client.QueryIndex(
+	_, err := client.queryIndex(
 		context.Background(),
 		"crm.byregion",
 		IndexExact(3.14),

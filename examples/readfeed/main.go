@@ -4,7 +4,7 @@
 // ephemeral tail in ../tailfeed.
 //
 // For a managed loop — auto-provisioning, retry policy, and a
-// Close-able handle — use client.Subscribe instead of this explicit
+// Close-able handle — use Domain.Subscribe instead of this explicit
 // form.
 //
 // The loop below is explicit — Whitewater Readers pull rather than push:
@@ -37,22 +37,25 @@ func main() {
 		30*time.Second,
 	)
 
-	// One-time provisioning: the Reader declaration is durable Control
-	// Plane state, not a per-session object.
-	for _, step := range []func() error{
-		func() error { _, err := client.CreateDomain(ctx, "demo"); return err },
-		func() error { _, err := client.CreateFeed(ctx, "demo.tail"); return err },
-		func() error {
-			_, err := client.CreateReader(ctx, "demo.reader", "demo.tail", whitewater.StartBeginning())
-			return err
-		},
-	} {
-		if err := step(); err != nil {
-			log.Fatal(err)
-		}
+	// One-time provisioning: the Domain owns every resource, and the
+	// Reader declaration is durable Control Plane state, not a
+	// per-session object.
+	demo, err := client.CreateDomain(ctx, "demo")
+	if err != nil {
+		log.Fatal(err)
+	}
+	if _, err := demo.CreateFeed(ctx, "tail"); err != nil {
+		log.Fatal(err)
+	}
+	if _, err := demo.CreateReaderFeed(
+		ctx, "reader", whitewater.Rel("tail"), whitewater.StartBeginning()); err != nil {
+		log.Fatal(err)
 	}
 
-	reader := client.Reader("demo.reader")
+	reader, err := demo.Reader("reader")
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Open fences this client as the session owner. Another client
 	// opening the same Reader supersedes this session (stale_epoch on

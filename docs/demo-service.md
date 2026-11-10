@@ -33,17 +33,14 @@ func main() {
 		5*time.Second)
 
 	// ---- provision ---------------------------------------------------
-	if err := client.CreateDomain(ctx, "shop"); err != nil {
-		log.Fatal(err)
-	}
-	shop, err := client.GetDomain(ctx, "shop")
+	shop, err := client.CreateDomain(ctx, "shop")
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := shop.CreateFeed(ctx, "orders"); err != nil {
+	if _, err := shop.CreateFeed(ctx, "orders"); err != nil {
 		log.Fatal(err)
 	}
-	if err := shop.CreateFeed(ctx, "orders.dlq"); err != nil {
+	if _, err := shop.CreateFeed(ctx, "orders.dlq"); err != nil {
 		log.Fatal(err)
 	}
 
@@ -51,7 +48,7 @@ func main() {
 	// The default Feed binds UTF-8 strings — the SDK serializes, no
 	// []byte casts or codec binding needed for plain JSON.
 	writer, err := shop.CreateWriter("orders").
-		WriterID("orders.ingest").
+		WriterID("ingest").                        // resolves to shop.ingest
 		Open(ctx)
 	if err != nil {
 		log.Fatal(err)
@@ -62,7 +59,7 @@ func main() {
 
 	// ---- consume -----------------------------------------------------
 	deadLetter, err := shop.CreateWriter("orders.dlq").
-		WriterID("fulfillment.dlq").
+		WriterID("dlq").
 		Open(ctx)
 	if err != nil {
 		log.Fatal(err)

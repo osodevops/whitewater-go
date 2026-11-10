@@ -37,7 +37,7 @@ type RowsResult[K comparable, V any] struct {
 // serializes through the bound codecs, so application code stays in
 // its own types:
 //
-//	store, _ := whitewater.StoreOf(client, "accounts.employees",
+//	store, _ := whitewater.StoreOfDomain(accounts, "employees",
 //	    whitewater.StringCodec(), whitewater.JSONCodec[Profile]())
 //	store.Put(ctx, "user-1", profile, map[string]any{"passport": "P111"}, "")
 //	row, _ := store.Get(ctx, "user-1", false, 0)   // row.Value is Profile
@@ -47,7 +47,7 @@ type RowsResult[K comparable, V any] struct {
 //
 //	spec, _ := whitewater.NewStateStore("accounts.employees")
 //	spec.AddKey("passport", true)
-//	raw, _ := client.StateStores.Define(ctx, spec, "")
+//	raw, _ := domain.DefineStateStore(ctx, spec)
 //	store := whitewater.StoreOfBound[string, Profile](raw, kc, vc)
 type Store[K comparable, V any] struct {
 	store      *StateStore
@@ -55,30 +55,30 @@ type Store[K comparable, V any] struct {
 	valueCodec Codec[V]
 }
 
-// StoreOf binds a declared StateStore under explicit codecs; nil codec
+// StoreOfDomain binds a declared StateStore under explicit codecs; nil codec
 // arguments default to CodecFor (JSON for object types).
-func StoreOf[K comparable, V any](
+func storeOf[K comparable, V any](
 	client *Client,
 	name string,
 	keyCodec Codec[K],
 	valueCodec Codec[V],
 ) (*Store[K, V], error) {
-	bound, err := client.StateStore(name)
+	bound, err := client.stateStore(name)
 	if err != nil {
 		return nil, err
 	}
 	return StoreOfBound[K, V](bound, keyCodec, valueCodec), nil
 }
 
-// StoreFor binds a declared StateStore with string keys and
-// CodecFor[V] values — the common case: StoreFor[Profile](client, "s").
-func StoreFor[V any](client *Client, name string) (*Store[string, V], error) {
-	return StoreOf(client, name, StringCodec(), CodecFor[V]())
+// StoreForDomain binds a declared StateStore with string keys and
+// CodecFor[V] values — the common case.
+func storeFor[V any](client *Client, name string) (*Store[string, V], error) {
+	return storeOf(client, name, StringCodec(), CodecFor[V]())
 }
 
 // Store binds the default facade: string keys + raw byte payloads.
-func (c *Client) Store(name string) (*Store[string, []byte], error) {
-	return StoreOf(c, name, StringCodec(), BytesCodec())
+func (c *Client) store(name string) (*Store[string, []byte], error) {
+	return storeOf(c, name, StringCodec(), BytesCodec())
 }
 
 // StoreOfBound rebinds an already-bound StateStore under typed codecs

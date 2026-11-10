@@ -77,23 +77,12 @@ type Subscription struct {
 	once   sync.Once
 }
 
-// Subscribe opens a durable subscription: it declares the named Reader
+// subscribe opens a durable subscription: it declares the named Reader
 // when missing (creating it at start), opens a session, and invokes
 // onRecords per fetched page in the background, acknowledging after each
 // batch. The Subscription runs until Close or ctx cancellation; terminal
-// errors reach onError (when non-nil) and Err().
-func (c *Client) Subscribe(
-	ctx context.Context,
-	reader string,
-	feed string,
-	start ReaderStart,
-	onRecords func([]Record) error,
-	onError func(error),
-) *Subscription {
-	return c.subscribe(
-		ctx, reader, feed, start, subscribeCapacity, onRecords, onError)
-}
-
+// errors reach onError (when non-nil) and Err(). The app-facing route is
+// Domain.Subscribe / Feed.Subscribe, which resolve names in-domain.
 func (c *Client) subscribe(
 	ctx context.Context,
 	reader string,
@@ -149,7 +138,7 @@ func (s *Subscription) run(
 		s.fail(err, onError)
 		return
 	}
-	reader := client.Reader(readerName)
+	reader := client.reader(readerName)
 	var session ReaderSession
 	for {
 		var err error
@@ -230,7 +219,7 @@ func (c *Client) ensureReader(
 	feed string,
 	start ReaderStart,
 ) error {
-	if _, err := c.CreateReader(ctx, name, feed, start); err != nil {
+	if _, err := c.createReader(ctx, name, feed, start); err != nil {
 		if !strings.Contains(err.Error(), "exists") {
 			return err
 		}

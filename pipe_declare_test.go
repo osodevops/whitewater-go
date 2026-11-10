@@ -135,7 +135,7 @@ func TestWindowAggregationWire(t *testing.T) {
 
 func TestDefineForwardPipePostsWireShape(t *testing.T) {
 	client, paths, bodies := operationsStub(t)
-	if _, err := client.DefineForwardPipe(
+	if _, err := client.defineForwardPipe(
 		context.Background(), "orders.relay", "orders.sub", "orders.copy"); err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestDefineEnrichPipePostsWireShape(t *testing.T) {
 	op := EnrichOperation(JsonExtractor("user_id"), EnrichOptions{
 		OnMiss: EnrichMissQuarantine,
 	})
-	if _, err := client.DefineEnrichPipe(
+	if _, err := client.defineEnrichPipe(
 		ctx, "orders.enrich", "orders.sub", "orders.enriched",
 		"orders.profiles", op, "orders.dlq"); err != nil {
 		t.Fatal(err)
@@ -186,7 +186,7 @@ func TestDefineEnrichPipePostsWireShape(t *testing.T) {
 		t.Fatalf("key = %v", key)
 	}
 	// Empty quarantine omits the field entirely.
-	if _, err := client.DefineEnrichPipe(
+	if _, err := client.defineEnrichPipe(
 		ctx, "orders.enrich2", "orders.sub", "orders.enriched",
 		"orders.profiles", EnrichOperation(KeyExtractor()), ""); err != nil {
 		t.Fatal(err)
@@ -205,7 +205,7 @@ func TestDefineWindowPipePostsWireShape(t *testing.T) {
 		KeyExtractor(),
 		AverageAggregation(MetadataExtractor("latency")),
 		WindowOptions{MaxLate: time.Minute})
-	if _, err := client.DefineWindowPipe(
+	if _, err := client.defineWindowPipe(
 		ctx, "orders.hourly", "orders.sub", "orders.hourly.counts",
 		op, "orders.panes"); err != nil {
 		t.Fatal(err)
@@ -227,7 +227,7 @@ func TestDefineWindowPipePostsWireShape(t *testing.T) {
 		t.Fatalf("operation = %v", operation)
 	}
 	// Zero options leave every bound absent.
-	if _, err := client.DefineWindowPipe(
+	if _, err := client.defineWindowPipe(
 		ctx, "orders.hourly2", "orders.sub", "orders.hourly.counts",
 		WindowOperation(time.Second, KeyExtractor(), CountAggregation()), ""); err != nil {
 		t.Fatal(err)
@@ -252,19 +252,19 @@ func TestDefineWindowPipePostsWireShape(t *testing.T) {
 func TestDefinePipeRejectsWrongOperationKind(t *testing.T) {
 	client, _, bodies := operationsStub(t)
 	ctx := context.Background()
-	if _, err := client.DefineEnrichPipe(
+	if _, err := client.defineEnrichPipe(
 		ctx, "orders.enrich", "orders.sub", "orders.enriched",
 		"orders.profiles", WindowOperation(time.Nanosecond, KeyExtractor(), CountAggregation()),
 		""); err == nil || !strings.Contains(err.Error(), "EnrichOperation") {
 		t.Fatalf("expected enrich-kind refusal, got %v", err)
 	}
-	if _, err := client.DefineEnrichPipe(
+	if _, err := client.defineEnrichPipe(
 		ctx, "orders.enrich", "orders.sub", "orders.enriched",
 		"orders.profiles", ForwardOperation(), ""); err == nil ||
 		!strings.Contains(err.Error(), "EnrichOperation") {
 		t.Fatalf("expected enrich-kind refusal, got %v", err)
 	}
-	if _, err := client.DefineWindowPipe(
+	if _, err := client.defineWindowPipe(
 		ctx, "orders.hourly", "orders.sub", "orders.counts",
 		EnrichOperation(KeyExtractor()), ""); err == nil ||
 		!strings.Contains(err.Error(), "WindowOperation") {
@@ -279,7 +279,7 @@ func TestDefinePipeRejectsWrongOperationKind(t *testing.T) {
 func TestDefineWindowRejectsNonPositiveWindow(t *testing.T) {
 	client, _, bodies := operationsStub(t)
 	for _, window := range []time.Duration{0, -time.Second} {
-		_, err := client.DefineWindowPipe(
+		_, err := client.defineWindowPipe(
 			context.Background(), "orders.hourly", "orders.sub", "orders.counts",
 			WindowOperation(window, KeyExtractor(), CountAggregation()), "")
 		if err == nil || !strings.Contains(err.Error(), "window") {
@@ -293,7 +293,7 @@ func TestDefineWindowRejectsNonPositiveWindow(t *testing.T) {
 
 func TestDefineWindowRejectsNegativeBounds(t *testing.T) {
 	client, _, bodies := operationsStub(t)
-	_, err := client.DefineWindowPipe(
+	_, err := client.defineWindowPipe(
 		context.Background(), "orders.hourly", "orders.sub", "orders.counts",
 		WindowOperation(time.Hour, KeyExtractor(), CountAggregation(),
 			WindowOptions{Watermark: -time.Minute}), "")
@@ -309,26 +309,26 @@ func TestDefinePipeValidatesOperationsAndExtractors(t *testing.T) {
 	client, _, _ := operationsStub(t)
 	ctx := context.Background()
 	// A zero-value PipeOperation declares nothing.
-	if _, err := client.DefineEnrichPipe(
+	if _, err := client.defineEnrichPipe(
 		ctx, "orders.enrich", "orders.sub", "orders.enriched",
 		"orders.profiles", PipeOperation{}, ""); err == nil {
 		t.Fatal("expected a refusal for an undeclared operation")
 	}
 	// Extractors with missing required fields fail at define time.
-	if _, err := client.DefineEnrichPipe(
+	if _, err := client.defineEnrichPipe(
 		ctx, "orders.enrich", "orders.sub", "orders.enriched",
 		"orders.profiles", EnrichOperation(MetadataExtractor("  ")), ""); err == nil ||
 		!strings.Contains(err.Error(), "metadata extractor") {
 		t.Fatalf("expected extractor refusal, got %v", err)
 	}
-	if _, err := client.DefineWindowPipe(
+	if _, err := client.defineWindowPipe(
 		ctx, "orders.hourly", "orders.sub", "orders.counts",
 		WindowOperation(time.Nanosecond, JsonExtractor(""), CountAggregation()), ""); err == nil ||
 		!strings.Contains(err.Error(), "json extractor") {
 		t.Fatalf("expected extractor refusal, got %v", err)
 	}
 	// Bad enum values in options structs are refused.
-	if _, err := client.DefineEnrichPipe(
+	if _, err := client.defineEnrichPipe(
 		ctx, "orders.enrich", "orders.sub", "orders.enriched",
 		"orders.profiles",
 		EnrichOperation(KeyExtractor(), EnrichOptions{OnMiss: "explode"}),
@@ -336,7 +336,7 @@ func TestDefinePipeValidatesOperationsAndExtractors(t *testing.T) {
 		t.Fatalf("expected miss-disposition refusal, got %v", err)
 	}
 	// A sum/average aggregation without a value extractor is refused.
-	if _, err := client.DefineWindowPipe(
+	if _, err := client.defineWindowPipe(
 		ctx, "orders.hourly", "orders.sub", "orders.counts",
 		WindowOperation(time.Nanosecond, KeyExtractor(), WindowAggregation{}), ""); err == nil {
 		t.Fatal("expected an undeclared-aggregation refusal")
@@ -348,19 +348,19 @@ func TestDefinePipeValidatesNames(t *testing.T) {
 	ctx := context.Background()
 	for _, call := range []func() error{
 		func() error {
-			_, err := client.DefineForwardPipe(ctx, "BAD NAME", "sub", "orders.copy")
+			_, err := client.defineForwardPipe(ctx, "BAD NAME", "sub", "orders.copy")
 			return err
 		},
 		func() error {
-			_, err := client.DefineForwardPipe(ctx, "orders.relay", "sub", "BAD NAME")
+			_, err := client.defineForwardPipe(ctx, "orders.relay", "sub", "BAD NAME")
 			return err
 		},
 		func() error {
-			_, err := client.DefineForwardPipe(ctx, "orders.relay", "bad sub", "orders.copy")
+			_, err := client.defineForwardPipe(ctx, "orders.relay", "bad sub", "orders.copy")
 			return err
 		},
 		func() error {
-			_, err := client.DefineEnrichPipe(
+			_, err := client.defineEnrichPipe(
 				ctx, "orders.enrich", "sub", "orders.enriched",
 				"BAD NAME", EnrichOperation(KeyExtractor()), "")
 			return err

@@ -288,7 +288,42 @@ func (d *Domain) CreateFeed(ctx context.Context, relative string) (ControlExecut
 	if err != nil {
 		return ControlExecution{}, err
 	}
-	return d.client.CreateFeed(ctx, full)
+	return d.client.createFeed(ctx, full)
+}
+
+// CreateReaderFeed executes CREATE READER <name> FROM <feed> inside
+// this Domain — d.CreateReaderFeed("audit", "orders") declares
+// shop.audit consuming shop.orders. The feed argument is a ScopedRef:
+// Rel("orders") resolves in-domain while a *Feed handle or
+// Abs("other.events") binds a Reader across Domains.
+func (d *Domain) CreateReaderFeed(
+	ctx context.Context, name string, feed ScopedRef, start ReaderStart,
+) (ControlExecution, error) {
+	full, err := d.resolve(name)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	target, err := feed.scopedName(d)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	return d.client.createReader(ctx, full, target, start)
+}
+
+// CreateWriterFeed executes CREATE WRITER <name> TO <feed> inside this
+// Domain — same scoping as CreateReaderFeed.
+func (d *Domain) CreateWriterFeed(
+	ctx context.Context, name string, feed ScopedRef,
+) (ControlExecution, error) {
+	full, err := d.resolve(name)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	target, err := feed.scopedName(d)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	return d.client.createWriter(ctx, full, target)
 }
 
 // CreateReader starts a fluent Reader declaration on relative inside
@@ -306,6 +341,256 @@ func (d *Domain) CreateReader(relative string) (*ReaderBuilder[string, string], 
 		return nil, err
 	}
 	return NewReaderBuilder(d.client, d, feed), nil
+}
+
+// CreateSubscription executes CREATE SUBSCRIPTION <name> FROM <feed>
+// inside this Domain — the Subscription and its progress are owned by
+// this Domain; the source Feed may be in another via a *Feed handle or
+// Abs(...) — e.g. warehouse.CreateSubscription(ctx, "fulfil",
+// purchasing.Feed("orders"), StartBeginning()).
+func (d *Domain) CreateSubscription(
+	ctx context.Context, name string, feed ScopedRef, start ReaderStart,
+) (ControlExecution, error) {
+	full, err := d.resolve(name)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	source, err := feed.scopedName(d)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	return d.client.createSubscription(ctx, full, source, start)
+}
+
+// SubscriptionRef returns a scoped reference to a Subscription inside
+// this Domain — for use as a Pipe's input in another declaration or
+// for member access through MemberClient.
+func (d *Domain) SubscriptionRef(relative string) (SubscriptionRef, error) {
+	full, err := d.resolve(relative)
+	if err != nil {
+		return SubscriptionRef{}, err
+	}
+	return SubscriptionRef{name: full}, nil
+}
+
+// Writer binds a named-Writer session inside this Domain — epoch from
+// OpenWriterSession. Raw session client; prefer Feed.Writer or
+// WriterBuilder for the typed route.
+func (d *Domain) Writer(name string, sessionEpoch int64) (*WriterSessionClient, error) {
+	full, err := d.resolve(name)
+	if err != nil {
+		return nil, err
+	}
+	return d.client.writer(full, sessionEpoch), nil
+}
+
+// Reader binds a named-Reader session inside this Domain —
+// open/fetch/ack/close with explicit session state.
+func (d *Domain) Reader(name string) (*ReaderSessionClient, error) {
+	full, err := d.resolve(name)
+	if err != nil {
+		return nil, err
+	}
+	return d.client.reader(full), nil
+}
+
+// MemberClient binds the raw subscription-member client inside this
+// Domain — join/claim/renew/release/fetch/ack under fenced leases.
+func (d *Domain) MemberClient(subscription string) (*SubscriptionMemberClient, error) {
+	full, err := d.resolve(subscription)
+	if err != nil {
+		return nil, err
+	}
+	return d.client.subscriptionMember(full), nil
+}
+
+// Subscribe opens a durable subscription inside this Domain: declares
+// the Reader when missing, then runs open → fetch → deliver → ack on a
+// background goroutine. The feed may point at another Domain through a
+// *Feed handle or Abs(...).
+func (d *Domain) Subscribe(
+	ctx context.Context,
+	reader string,
+	feed ScopedRef,
+	start ReaderStart,
+	onRecords func([]Record) error,
+	onError func(error),
+) (*Subscription, error) {
+	full, err := d.resolve(reader)
+	if err != nil {
+		return nil, err
+	}
+	source, err := feed.scopedName(d)
+	if err != nil {
+		return nil, err
+	}
+	return d.client.subscribe(ctx, full, source, start,
+		subscribeCapacity, onRecords, onError), nil
+}
+
+// OpenWriterSession executes OPEN WRITER SESSION <name> inside this
+// Domain — the epoch comes back in the execution's data.
+func (d *Domain) OpenWriterSession(ctx context.Context, writer string) (ControlExecution, error) {
+	full, err := d.resolve(writer)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	return d.client.openWriterSession(ctx, full)
+}
+
+// SeekReader executes SEEK READER <name> TO <start> inside this Domain.
+func (d *Domain) SeekReader(ctx context.Context, reader string, start ReaderStart) (ControlExecution, error) {
+	full, err := d.resolve(reader)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	return d.client.seekReader(ctx, full, start)
+}
+
+// DescribeFeed executes DESCRIBE FEED <name> inside this Domain.
+func (d *Domain) DescribeFeed(ctx context.Context, relative string) (ControlExecution, error) {
+	full, err := d.resolve(relative)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	return d.client.describeFeed(ctx, full)
+}
+
+// DescribeWriter executes DESCRIBE WRITER <name> inside this Domain.
+func (d *Domain) DescribeWriter(ctx context.Context, relative string) (ControlExecution, error) {
+	full, err := d.resolve(relative)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	return d.client.describeWriter(ctx, full)
+}
+
+// DescribeReader executes DESCRIBE READER <name> inside this Domain.
+func (d *Domain) DescribeReader(ctx context.Context, relative string) (ControlExecution, error) {
+	full, err := d.resolve(relative)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	return d.client.describeReader(ctx, full)
+}
+
+// DescribeSubscription executes DESCRIBE SUBSCRIPTION <name> inside
+// this Domain.
+func (d *Domain) DescribeSubscription(ctx context.Context, relative string) (ControlExecution, error) {
+	full, err := d.resolve(relative)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	return d.client.describeSubscription(ctx, full)
+}
+
+// RenameFeed executes RENAME FEED <current> TO <renamed> — both names
+// resolve inside this Domain.
+func (d *Domain) RenameFeed(ctx context.Context, current, renamed string) (ControlExecution, error) {
+	cur, err := d.resolve(current)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	nxt, err := d.resolve(renamed)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	return d.client.renameFeed(ctx, cur, nxt)
+}
+
+// RenameWriter executes RENAME WRITER <current> TO <renamed> in-domain.
+func (d *Domain) RenameWriter(ctx context.Context, current, renamed string) (ControlExecution, error) {
+	cur, err := d.resolve(current)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	nxt, err := d.resolve(renamed)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	return d.client.renameWriter(ctx, cur, nxt)
+}
+
+// RenameReader executes RENAME READER <current> TO <renamed> in-domain.
+func (d *Domain) RenameReader(ctx context.Context, current, renamed string) (ControlExecution, error) {
+	cur, err := d.resolve(current)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	nxt, err := d.resolve(renamed)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	return d.client.renameReader(ctx, cur, nxt)
+}
+
+// RenameSubscription executes RENAME SUBSCRIPTION <current> TO
+// <renamed> in-domain.
+func (d *Domain) RenameSubscription(ctx context.Context, current, renamed string) (ControlExecution, error) {
+	cur, err := d.resolve(current)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	nxt, err := d.resolve(renamed)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	return d.client.renameSubscription(ctx, cur, nxt)
+}
+
+// DropFeed executes DROP FEED <name> inside this Domain.
+func (d *Domain) DropFeed(ctx context.Context, relative string) (ControlExecution, error) {
+	full, err := d.resolve(relative)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	return d.client.dropFeed(ctx, full)
+}
+
+// DropWriter executes DROP WRITER <name> inside this Domain.
+func (d *Domain) DropWriter(ctx context.Context, relative string) (ControlExecution, error) {
+	full, err := d.resolve(relative)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	return d.client.dropWriter(ctx, full)
+}
+
+// DropReader executes DROP READER <name> inside this Domain.
+func (d *Domain) DropReader(ctx context.Context, relative string) (ControlExecution, error) {
+	full, err := d.resolve(relative)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	return d.client.dropReader(ctx, full)
+}
+
+// DropSubscription executes DROP SUBSCRIPTION <name> inside this Domain.
+func (d *Domain) DropSubscription(ctx context.Context, relative string) (ControlExecution, error) {
+	full, err := d.resolve(relative)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	return d.client.dropSubscription(ctx, full)
+}
+
+// SetFeedSchema executes SET SCHEMA ON FEED <feed> inside this Domain.
+func (d *Domain) SetFeedSchema(ctx context.Context, relative string, schema *FeedSchema) (ControlExecution, error) {
+	full, err := d.resolve(relative)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	return d.client.setFeedSchema(ctx, full, schema)
+}
+
+// ClearFeedSchema executes DROP SCHEMA ON FEED <feed> inside this
+// Domain.
+func (d *Domain) ClearFeedSchema(ctx context.Context, relative string) (ControlExecution, error) {
+	full, err := d.resolve(relative)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	return d.client.clearFeedSchema(ctx, full)
 }
 
 // CreateWriter starts a fluent Writer declaration on relative inside
@@ -327,13 +612,13 @@ func (d *Domain) Feed(relative string) (*Feed[string, string], error) {
 }
 
 // FeedForDomain binds a Feed inside domain with a typed payload Codec —
-// the Domain companion of FeedFor.
+// the Domain-first typed binding.
 func FeedForDomain[V any](domain *Domain, relative string) (*Feed[string, V], error) {
 	return FeedOfDomain(domain, relative, StringCodec(), CodecFor[V]())
 }
 
 // FeedOfDomain binds a Feed inside domain under explicit codecs —
-// the Domain companion of FeedOf.
+// the Domain-first explicit-codec binding.
 func FeedOfDomain[K comparable, V any](
 	domain *Domain, relative string, keyCodec Codec[K], valueCodec Codec[V],
 ) (*Feed[K, V], error) {
@@ -342,9 +627,81 @@ func FeedOfDomain[K comparable, V any](
 		return nil, err
 	}
 	return &Feed[K, V]{
-		client: domain.client, feedClient: domain.client.Feeds,
+		client: domain.client, feedClient: domain.client.feeds,
 		name: full, keyCodec: keyCodec, valueCodec: valueCodec,
 	}, nil
+}
+
+// ScopedRef names a resource endpoint for a Pipe declaration, a
+// Subscription's source Feed, or a StateStore's source — the
+// cross-Domain vocabulary. Implementations:
+//
+//	Rel("orders")              — resolves inside the declaring Domain
+//	Abs("other.events")        — keeps a fully-qualified name
+//	*Feed[K,V], *StateStore, *Store[K,V], SubscriptionRef — carry
+//	                             their absolute names
+//
+// The Domain owns the declaration either way — only the endpoint moves.
+type ScopedRef interface {
+	scopedName(d *Domain) (string, error)
+}
+
+// Scoped is the explicit-reference form of ScopedRef — Rel for
+// in-Domain names, Abs for qualified cross-Domain names.
+type Scoped struct {
+	name     string
+	absolute bool
+}
+
+// Rel names a resource inside the declaring Domain — the readable
+// default for every endpoint.
+func Rel(name string) Scoped { return Scoped{name: name} }
+
+// Abs names a resource by its full Domain-qualified name — the
+// deliberate cross-Domain edge.
+func Abs(name string) Scoped { return Scoped{name: name, absolute: true} }
+
+// scopedName resolves this Scoped — Rel composes inside d, Abs keeps
+// its qualified name.
+func (s Scoped) scopedName(d *Domain) (string, error) {
+	if s.absolute {
+		return dottedName(s.name)
+	}
+	return d.resolve(s.name)
+}
+
+// Scoped resolves a ScopedRef to its wire name inside this Domain.
+func (d *Domain) Scoped(ref ScopedRef) (string, error) {
+	return ref.scopedName(d)
+}
+
+// SubscriptionRef carries a Subscription's absolute name — a Pipe
+// input, a member-lease target, or a cross-Domain edge.
+type SubscriptionRef struct {
+	client *Client
+	name   string
+}
+
+// Name is the Subscription's absolute Domain-qualified name.
+func (r SubscriptionRef) Name() string { return r.name }
+
+// scopedName returns the carried qualified name.
+func (r SubscriptionRef) scopedName(d *Domain) (string, error) { return r.name, nil }
+
+// MemberClient binds the raw member client for this Subscription.
+func (r SubscriptionRef) MemberClient() *SubscriptionMemberClient {
+	return r.client.subscriptionMember(r.name)
+}
+
+// Feed implements ScopedRef — its name is already Domain-qualified.
+func (f *Feed[K, V]) scopedName(d *Domain) (string, error) { return f.name, nil }
+
+// StateStore implements ScopedRef — its name is already Domain-qualified.
+func (s *StateStore) scopedName(d *Domain) (string, error) { return s.name, nil }
+
+// Store implements ScopedRef — its name is already Domain-qualified.
+func (s *Store[K, V]) scopedName(d *Domain) (string, error) {
+	return s.store.name, nil
 }
 
 // resolve maps a relative name to its full dotted Feed name inside
@@ -484,6 +841,211 @@ func (d *Domain) load(ctx context.Context) (*domainSnapshot, error) {
 	return snap, nil
 }
 
+// FeedOps returns the raw FeedClient — the byte-level escape hatch for
+// committed reads, anonymous temporary fetches, and ad-hoc appends.
+func (d *Domain) FeedOps() *FeedClient { return d.client.feeds }
+
+// Pipe returns the lifecycle handle for a Pipe inside this Domain —
+// Describe/Pause/Resume/Drop.
+func (d *Domain) Pipe(relative string) (*Pipe, error) {
+	full, err := d.resolve(relative)
+	if err != nil {
+		return nil, err
+	}
+	return d.client.pipe(full), nil
+}
+
+// PipeInfos lists declared Pipes inside this Domain.
+func (d *Domain) PipeInfos(ctx context.Context) ([]PipeInfo, error) {
+	all, err := d.client.pipes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	prefix := d.name + "."
+	var out []PipeInfo
+	for _, info := range all {
+		if strings.HasPrefix(info.Name, prefix) {
+			out = append(out, info)
+		}
+	}
+	return out, nil
+}
+
+// DefineForwardPipe declares a copy Pipe inside this Domain — every
+// endpoint is a ScopedRef: Rel("...") resolves in-domain, while a
+// *Feed/SubscriptionRef handle or Abs(...) points across Domains. The
+// input Subscription must belong to this Domain (it is the Pipe's own
+// durable frontier); the output Feed may live anywhere.
+func (d *Domain) DefineForwardPipe(
+	ctx context.Context, name string, subscription, outputFeed ScopedRef,
+) (ControlExecution, error) {
+	full, err := d.resolve(name)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	sub, err := subscription.scopedName(d)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	out, err := outputFeed.scopedName(d)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	return d.client.defineForwardPipe(ctx, full, sub, out)
+}
+
+// DefineEnrichPipe declares point-lookup enrichment inside this
+// Domain — every endpoint follows the ScopedRef rule.
+func (d *Domain) DefineEnrichPipe(
+	ctx context.Context,
+	name string,
+	subscription, outputFeed, store ScopedRef,
+	op PipeOperation,
+	quarantineFeed ScopedRef,
+) (ControlExecution, error) {
+	full, err := d.resolve(name)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	sub, err := subscription.scopedName(d)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	out, err := outputFeed.scopedName(d)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	lookup, err := store.scopedName(d)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	quarantine := ""
+	if quarantineFeed != nil {
+		if quarantine, err = quarantineFeed.scopedName(d); err != nil {
+			return ControlExecution{}, err
+		}
+	}
+	return d.client.defineEnrichPipe(ctx, full, sub, out, lookup, op, quarantine)
+}
+
+// DefineWindowPipe declares rolling-window aggregation inside this
+// Domain — every endpoint follows the ScopedRef rule.
+func (d *Domain) DefineWindowPipe(
+	ctx context.Context,
+	name string,
+	subscription, outputStore ScopedRef,
+	op PipeOperation,
+	emitFeed ScopedRef,
+) (ControlExecution, error) {
+	full, err := d.resolve(name)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	sub, err := subscription.scopedName(d)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	view, err := outputStore.scopedName(d)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	emit := ""
+	if emitFeed != nil {
+		if emit, err = emitFeed.scopedName(d); err != nil {
+			return ControlExecution{}, err
+		}
+	}
+	return d.client.defineWindowPipe(ctx, full, sub, view, op, emit)
+}
+
+// StateStore binds a StateStore spec/facade inside this Domain —
+// d.StateStore("profiles") composes shop.profiles. Pass the result to
+// DefineStateStore to declare it, or use it for row operations.
+func (d *Domain) StateStore(relative string) (*StateStore, error) {
+	full, err := d.resolve(relative)
+	if err != nil {
+		return nil, err
+	}
+	return d.client.stateStore(full)
+}
+
+// Store binds a typed Store facade inside this Domain under explicit
+// codecs.
+func (d *Domain) Store(relative string) (*Store[string, []byte], error) {
+	full, err := d.resolve(relative)
+	if err != nil {
+		return nil, err
+	}
+	return d.client.store(full)
+}
+
+// StoreForDomain binds a Store inside domain with string keys and a
+// CodecFor[V] payload — the typed companion of Store.
+func StoreForDomain[V any](domain *Domain, relative string) (*Store[string, V], error) {
+	bound, err := domain.StateStore(relative)
+	if err != nil {
+		return nil, err
+	}
+	return StoreOfBound[string, V](bound, StringCodec(), CodecFor[V]()), nil
+}
+
+// StoreOfDomain binds a Store inside domain under explicit codecs.
+func StoreOfDomain[K comparable, V any](
+	domain *Domain, relative string, keyCodec Codec[K], valueCodec Codec[V],
+) (*Store[K, V], error) {
+	bound, err := domain.StateStore(relative)
+	if err != nil {
+		return nil, err
+	}
+	return StoreOfBound[K, V](bound, keyCodec, valueCodec), nil
+}
+
+// DefineStateStore declares spec inside this Domain — the spec's name
+// resolves in-domain; source names the Feed it materializes from
+// (nil = manual), and may point at another Domain through a *Feed
+// handle or Abs(...). Returns the bound store facade.
+func (d *Domain) DefineStateStore(
+	ctx context.Context, spec *StateStore, source ScopedRef,
+) (*StateStore, error) {
+	if spec == nil {
+		return nil, fmt.Errorf("define takes a StateStore spec — use Domain.StateStore(name)")
+	}
+	full, err := d.resolve(spec.name)
+	if err != nil {
+		return nil, err
+	}
+	scopedSpec := *spec
+	scopedSpec.name = full
+	var src string
+	if source != nil {
+		if src, err = source.scopedName(d); err != nil {
+			return nil, err
+		}
+	}
+	return d.client.stateStores.Define(ctx, &scopedSpec, src)
+}
+
+// DropStateStore executes DROP STATESTORE <name> inside this Domain.
+func (d *Domain) DropStateStore(ctx context.Context, relative string) (ControlExecution, error) {
+	full, err := d.resolve(relative)
+	if err != nil {
+		return ControlExecution{}, err
+	}
+	return d.client.stateStores.Drop(ctx, full)
+}
+
+// QueryIndex executes an index query inside this Domain — the index
+// name resolves in-domain.
+func (d *Domain) QueryIndex(
+	ctx context.Context, relative string, predicate IndexPredicate, limit int, strict bool,
+) (IndexPage, error) {
+	full, err := d.resolve(relative)
+	if err != nil {
+		return IndexPage{}, err
+	}
+	return d.client.queryIndex(ctx, full, predicate, limit, strict)
+}
+
 // requireOwnedFeed verifies feed lives under the Domain's prefix —
 // called by the fluent Reader/Writer builders so a feed bound to
 // another Domain fails locally.
@@ -554,7 +1116,7 @@ func (b *ReaderBuilder[K, V]) Declare(ctx context.Context) (ControlExecution, er
 	if err := b.domain.requireOwnedFeed(b.feed.Name()); err != nil {
 		return ControlExecution{}, err
 	}
-	return b.client.CreateReader(ctx, id, b.feed.Name(), b.start)
+	return b.client.createReader(ctx, id, b.feed.Name(), b.start)
 }
 
 // Open declares the Reader when missing (an existing declaration
@@ -571,7 +1133,7 @@ func (b *ReaderBuilder[K, V]) Open(ctx context.Context) (*FeedReader[K, V], erro
 	if err := b.client.ensureReader(ctx, id, b.feed.Name(), b.start); err != nil {
 		return nil, err
 	}
-	sessionClient := b.client.Reader(id)
+	sessionClient := b.client.reader(id)
 	session, err := sessionClient.Open(ctx, b.maxPageSize)
 	if err != nil {
 		return nil, err
@@ -587,7 +1149,9 @@ func (b *ReaderBuilder[K, V]) requireID() (string, error) {
 		return "", fmt.Errorf("ReaderID(...) is required — the durable consume identity" +
 			" (the Kafka groupId analogue)")
 	}
-	return b.readerID, nil
+	// Reader identities are Domain resources — "fulfillment" inside
+	// "shop" declares shop.fulfillment, never a global name.
+	return b.domain.resolve(b.readerID)
 }
 
 // WriterBuilder is the fluent declaration + session-open of a durable
@@ -628,7 +1192,7 @@ func (b *WriterBuilder[K, V]) Declare(ctx context.Context) (ControlExecution, er
 	if err := b.domain.requireOwnedFeed(b.feed.Name()); err != nil {
 		return ControlExecution{}, err
 	}
-	return b.client.CreateWriter(ctx, id, b.feed.Name())
+	return b.client.createWriter(ctx, id, b.feed.Name())
 }
 
 // Open declares the Writer when missing, opens a session (the fencing
@@ -641,7 +1205,7 @@ func (b *WriterBuilder[K, V]) Open(ctx context.Context) (*FeedWriter[K, V], erro
 	if err := b.domain.requireOwnedFeed(b.feed.Name()); err != nil {
 		return nil, err
 	}
-	if _, err := b.client.CreateWriter(ctx, id, b.feed.Name()); err != nil {
+	if _, err := b.client.createWriter(ctx, id, b.feed.Name()); err != nil {
 		if !strings.Contains(err.Error(), "exists") {
 			return nil, err
 		}
@@ -651,7 +1215,7 @@ func (b *WriterBuilder[K, V]) Open(ctx context.Context) (*FeedWriter[K, V], erro
 		return nil, err
 	}
 	return &FeedWriter[K, V]{
-		session:  b.client.Writer(id, epoch),
+		session:  b.client.writer(id, epoch),
 		keyCodec: b.feed.keyCodec, valueCodec: b.feed.valueCodec,
 	}, nil
 }
@@ -660,5 +1224,6 @@ func (b *WriterBuilder[K, V]) requireID() (string, error) {
 	if b.writerID == "" {
 		return "", fmt.Errorf("WriterID(...) is required")
 	}
-	return b.writerID, nil
+	// Writer identities are Domain resources — same rule as ReaderID.
+	return b.domain.resolve(b.writerID)
 }

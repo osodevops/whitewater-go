@@ -9,7 +9,7 @@ import (
 // wire always carries raw bytes; a Codec keeps that plumbing inside
 // the SDK so application code works with its own types:
 //
-//	orders := whitewater.FeedOf(client, "orders.events",
+//	orders, _ := whitewater.FeedOfDomain(shop, "events",
 //	    whitewater.StringCodec(), whitewater.JSONCodec[Order]())
 //	writer, _ := orders.Writer(ctx, "ingest")
 //	writer.Append(ctx, "order-1", order)          // encoded for you
@@ -80,7 +80,7 @@ func FuncCodec[T any](
 }
 
 // CodecFor picks a codec by type: string is UTF-8, []byte is raw
-// identity, everything else is JSON-mapped — so FeedFor[Order] just
+// identity, everything else is JSON-mapped — so FeedForDomain[Order] just
 // works without spelling JSONCodec[Order]().
 func CodecFor[T any]() Codec[T] {
 	var zero T

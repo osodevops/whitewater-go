@@ -259,7 +259,7 @@ func (r *FeedReader[K, V]) Close(ctx context.Context) error {
 // history on the Nodes. The bound codecs serialize on write and
 // deserialize on read, so application code stays in its own types:
 //
-//	orders, _ := whitewater.FeedOf(client, "orders.events",
+//	orders, _ := whitewater.FeedOfDomain(shop, "events",
 //	    whitewater.StringCodec(), whitewater.JSONCodec[Order]())
 //	writer, _ := orders.Writer(ctx, "ingest")
 //	writer.Append(ctx, "order-1", Order{ID: "order-1", Total: 42})
@@ -271,9 +271,10 @@ type Feed[K comparable, V any] struct {
 	valueCodec Codec[V]
 }
 
-// FeedOf binds a Feed under explicit codecs. name must be lowercase
-// dotted segments.
-func FeedOf[K comparable, V any](
+// feedOf binds a Feed under explicit codecs. name must be lowercase
+// dotted segments — the app-facing route is FeedOfDomain / FeedForDomain, which
+// resolves relative names inside the Domain.
+func feedOf[K comparable, V any](
 	client *Client,
 	name string,
 	keyCodec Codec[K],
@@ -284,23 +285,44 @@ func FeedOf[K comparable, V any](
 		return nil, err
 	}
 	return &Feed[K, V]{
-		client: client, feedClient: client.Feeds, name: dotted,
+		client: client, feedClient: client.feeds, name: dotted,
 		keyCodec: keyCodec, valueCodec: valueCodec,
 	}, nil
 }
 
-// FeedFor binds a Feed with string keys and a CodecFor[V] payload
-// (JSON for object types) — the common case:
-//
-//	orders, _ := whitewater.FeedFor[Order](client, "orders.events")
-func FeedFor[V any](client *Client, name string) (*Feed[string, V], error) {
-	return FeedOf(client, name, StringCodec(), CodecFor[V]())
+// feedFor binds a Feed with string keys and a CodecFor[V] payload
+// (JSON for object types) — the common case.
+func feedFor[V any](client *Client, name string) (*Feed[string, V], error) {
+	return feedOf(client, name, StringCodec(), CodecFor[V]())
 }
 
-// Feed binds the default facade: string keys + raw byte payloads —
-// the escape hatch to wire bytes.
-func (c *Client) Feed(name string) (*Feed[string, string], error) {
-	return FeedOf(c, name, StringCodec(), StringCodec())
+// feed binds the default facade: string keys + raw byte payloads —
+// internal; the public route is Domain.Feed.
+func (c *Client) feed(name string) (*Feed[string, string], error) {
+	return feedOf(c, name, StringCodec(), StringCodec())
+}
+
+// domain is the namespace prefix owning this Feed — the first dotted
+// segment. Writer/Reader/Subscription names resolve inside it so no
+// resource escapes the Feed's Domain.
+func (f *Feed[K, V]) domain() string {
+	if i := strings.IndexByte(f.name, '.'); i > 0 {
+		return f.name[:i]
+	}
+	return f.name
+}
+
+// scope resolves a writer/reader/subscription name inside this Feed's
+// Domain — "ingest" on shop.orders becomes shop.ingest; an already
+// qualified name inside the Domain passes through.
+func (f *Feed[K, V]) scope(name string) string {
+	if name == "" {
+		return name
+	}
+	if strings.HasPrefix(name, f.domain()+".") {
+		return name
+	}
+	return f.domain() + "." + name
 }
 
 // Name is the Feed's dotted name.
@@ -373,7 +395,8 @@ func (f *Feed[K, V]) Load(
 // Writer when missing (reusing an existing one), opens a session, and
 // binds the feed's codecs so writer.Append(key, value) just works.
 func (f *Feed[K, V]) Writer(ctx context.Context, writerName string) (*FeedWriter[K, V], error) {
-	if _, err := f.client.CreateWriter(ctx, writerName, f.name); err != nil {
+	writerName = f.scope(writerName)
+	if _, err := f.client.createWriter(ctx, writerName, f.name); err != nil {
 		if !strings.Contains(err.Error(), "exists") {
 			return nil, err
 		}
@@ -383,7 +406,7 @@ func (f *Feed[K, V]) Writer(ctx context.Context, writerName string) (*FeedWriter
 		return nil, err
 	}
 	return &FeedWriter[K, V]{
-		session:  f.client.Writer(writerName, epoch),
+		session:  f.client.writer(writerName, epoch),
 		keyCodec: f.keyCodec, valueCodec: f.valueCodec,
 	}, nil
 }
@@ -420,10 +443,11 @@ func (f *Feed[K, V]) Append(
 func (f *Feed[K, V]) Reader(
 	ctx context.Context, readerName string, capacity int,
 ) (*FeedReader[K, V], error) {
+	readerName = f.scope(readerName)
 	if err := f.client.ensureReader(ctx, readerName, f.name, StartBeginning()); err != nil {
 		return nil, err
 	}
-	sessionClient := f.client.Reader(readerName)
+	sessionClient := f.client.reader(readerName)
 	session, err := sessionClient.Open(ctx, capacity)
 	if err != nil {
 		return nil, err
@@ -445,7 +469,7 @@ func (f *Feed[K, V]) Subscribe(
 	onError func(error),
 ) *Subscription {
 	return f.subscribeDecoded(
-		ctx, reader, start, subscribeCapacity, onRecords, onError)
+		ctx, f.scope(reader), start, subscribeCapacity, onRecords, onError)
 }
 
 func (f *Feed[K, V]) subscribeDecoded(
@@ -484,7 +508,7 @@ func (f *Feed[K, V]) Consumer(reader string) *FeedConsumer[K, V] {
 }
 
 func (f *Feed[K, V]) openWriterSession(ctx context.Context, writerName string) (int64, error) {
-	execution, err := f.client.OpenWriterSession(ctx, writerName)
+	execution, err := f.client.openWriterSession(ctx, writerName)
 	if err != nil {
 		return 0, err
 	}

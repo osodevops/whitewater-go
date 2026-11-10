@@ -12,8 +12,8 @@ import (
 // health) plus the Writer, Reader, Subscription-member, and Feed facades.
 type Client struct {
 	transport   *transport
-	Feeds       *FeedClient
-	StateStores *StateStoresClient
+	feeds       *FeedClient
+	stateStores *StateStoresClient
 }
 
 // NewClient builds a client against one or more Node endpoints.
@@ -25,26 +25,26 @@ func NewClient(apiKey string, endpoints []string, timeout time.Duration) *Client
 	transport := newTransport(endpoints, apiKey, timeout)
 	return &Client{
 		transport:   transport,
-		Feeds:       &FeedClient{transport: transport},
-		StateStores: &StateStoresClient{transport: transport},
+		feeds:       &FeedClient{transport: transport},
+		stateStores: &StateStoresClient{transport: transport},
 	}
 }
 
 // Writer binds a named-Writer session at sessionEpoch (from WCL
 // OPEN WRITER SESSION).
-func (c *Client) Writer(name string, sessionEpoch int64) *WriterSessionClient {
+func (c *Client) writer(name string, sessionEpoch int64) *WriterSessionClient {
 	return &WriterSessionClient{
 		transport: c.transport, writer: name, sessionEpoch: sessionEpoch,
 	}
 }
 
 // Reader binds a named Reader with its independent durable cursor.
-func (c *Client) Reader(name string) *ReaderSessionClient {
+func (c *Client) reader(name string) *ReaderSessionClient {
 	return &ReaderSessionClient{transport: c.transport, reader: name}
 }
 
 // SubscriptionMember binds a cooperating member of a named Subscription.
-func (c *Client) SubscriptionMember(subscription string) *SubscriptionMemberClient {
+func (c *Client) subscriptionMember(subscription string) *SubscriptionMemberClient {
 	return &SubscriptionMemberClient{transport: c.transport, subscription: subscription}
 }
 
