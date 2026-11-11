@@ -133,6 +133,11 @@ func runScenario(t *testing.T, client *Client, scenario map[string]any, chaosCom
 
 		attempt := 0
 		transientAttempts := 0
+		// Wall-clock bound on the transient budget: 120 attempts was meant as
+		// a ~one-minute window, but an unavailable endpoint can burn a whole
+		// transport timeout per attempt — cap elapsed time so a dead
+		// Riverbed fails instead of grinding for hours.
+		transientDeadline := time.Now().Add(120 * time.Second)
 		var status int
 		var body any
 		for {
@@ -140,7 +145,7 @@ func runScenario(t *testing.T, client *Client, scenario map[string]any, chaosCom
 			var err error
 			status, body, err = dispatch(context.Background(), client, op, args)
 			if err != nil {
-				if strings.HasPrefix(err.Error(), "transport:") && transientAttempts < 120 {
+				if strings.HasPrefix(err.Error(), "transport:") && transientAttempts < 120 && time.Now().Before(transientDeadline) {
 					transientAttempts++
 					time.Sleep(500 * time.Millisecond)
 					continue
@@ -152,7 +157,7 @@ func runScenario(t *testing.T, client *Client, scenario map[string]any, chaosCom
 				}
 				t.Fatalf("%s: step %d (%s) failed: %v", name, index+1, op, err)
 			}
-			if status >= 500 && transientAttempts < 120 {
+			if status >= 500 && transientAttempts < 120 && time.Now().Before(transientDeadline) {
 				transientAttempts++
 				time.Sleep(500 * time.Millisecond)
 				continue
@@ -197,8 +202,16 @@ func runChaos(t *testing.T, name string, index int, op string, step map[string]a
 	if runtime.GOOS == "windows" {
 		shell, flag = "cmd", "/C"
 	}
-	invocation := exec.Command(shell, flag, command+" "+action)
+	// The driver's internal waits are bounded to a few minutes; give it
+	// headroom but never let a wedged hook stall the gate.
+	chaosCtx, cancel := context.WithTimeout(context.Background(), 7*time.Minute)
+	defer cancel()
+	invocation := exec.CommandContext(chaosCtx, shell, flag, command+" "+action)
 	output, err := invocation.CombinedOutput()
+	if chaosCtx.Err() == context.DeadlineExceeded {
+		t.Fatalf("%s: step %d (%s) chaos hook timed out after 7m",
+			name, index+1, op)
+	}
 	if err != nil {
 		t.Fatalf("%s: step %d (%s) chaos hook failed: %v: %s",
 			name, index+1, op, err, output)
