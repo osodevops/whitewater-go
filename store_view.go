@@ -112,6 +112,42 @@ func (s *Store[K, V]) Raw() *StateStore { return s.store }
 // Put inserts or replaces one row, encoding key and payload through
 // the bound codecs. named maps declared named keys to typed scalar
 // values; a stable mutationID makes retries idempotent.
+// WithDefaultKey binds the secondary-key name used by PutWithKey.
+func (s *Store[K, V]) WithDefaultKey(defaultKeyName string) *Store[K, V] {
+	s.store.WithDefaultKey(defaultKeyName)
+	return s
+}
+
+// PutKeySet inserts or replaces one row using a typed StoreKeySet.
+func (s *Store[K, V]) PutKeySet(
+	ctx context.Context,
+	key K,
+	value V,
+	keys StoreKeySet,
+	mutationID string,
+) (MutationResult, error) {
+	var named map[string]any
+	if keys != nil {
+		named = keys.ToMap()
+	}
+	return s.Put(ctx, key, value, named, mutationID)
+}
+
+// PutWithKey inserts or replaces one row with a single default secondary-key string.
+func (s *Store[K, V]) PutWithKey(
+	ctx context.Context,
+	key K,
+	value V,
+	singleSecondaryKey string,
+	mutationID string,
+) (MutationResult, error) {
+	var named map[string]any
+	if singleSecondaryKey != "" {
+		named = map[string]any{s.store.resolveDefaultKeyName(): singleSecondaryKey}
+	}
+	return s.Put(ctx, key, value, named, mutationID)
+}
+
 func (s *Store[K, V]) Put(
 	ctx context.Context,
 	key K,

@@ -52,9 +52,33 @@ raw := whitewater.RebindStore(profiles, whitewater.StringCodec(),
 byte-level `domain.StateStore(relative)` facade below remains for raw
 access and declaration.
 
-## Writing
+## Writing & `StoreKeySet`
+
+Embed `whitewater.BaseStoreKeySet` in a struct for strongly-typed secondary-key postings, or use `NewStoreKeySet` / `BuildStoreKeySet` / `PutWithKey` / raw maps:
 
 ```go
+type PassportKeySet struct {
+    whitewater.BaseStoreKeySet
+}
+
+func (k PassportKeySet) WithPassport(v string) PassportKeySet {
+    k.Put("passport", v)
+    return k
+}
+
+func (k PassportKeySet) WithDepartment(v string) PassportKeySet {
+    k.Put("department", v)
+    return k
+}
+
+// 1. Fluent value literal:
+_, err = profiles.PutKeySet(ctx, "emp-1", profile,
+    PassportKeySet{}.WithPassport("P123").WithDepartment("eng"), "")
+
+// 2. Single default string fallback (maps to the store's first declared key):
+_, err = profiles.PutWithKey(ctx, "emp-1", profile, profile.Passport, "")
+
+// 3. Raw map is still supported for dynamic keys:
 _, err = store.Put(ctx, []byte("user-1"), []byte("profile-1"),
     map[string]any{"passport": "P111", "department": "eng", "score": 42},
     "")                                    // "" auto-generates mutation_id

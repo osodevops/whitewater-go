@@ -324,3 +324,109 @@ func TestIteratePagesUntilExhaustedThenClearAndDrop(t *testing.T) {
 		t.Fatalf("drop command = %v", entry)
 	}
 }
+
+type passportKeySet struct {
+	BaseStoreKeySet
+}
+
+func (k passportKeySet) WithPassport(v string) passportKeySet {
+	k.Put("passport", v)
+	return k
+}
+
+func (k passportKeySet) WithDepartment(v string) passportKeySet {
+	k.Put("department", v)
+	return k
+}
+
+func passportKeySetWith(passport, department string) passportKeySet {
+	return passportKeySet{}.WithPassport(passport).WithDepartment(department)
+}
+
+func passportKeySetOf(fn func(*passportKeySet)) passportKeySet {
+	var ks passportKeySet
+	fn(&ks)
+	return ks
+}
+
+func TestStoreKeySetSupportsAllInlineStylesAndSingleStringFallback(t *testing.T) {
+	stub := &storeStub{routes: map[string]string{
+		"/v1/admin/commands":      commandsOK,
+		"/v1/state-stores/mutate": mutationOK,
+	}}
+	server := httptest.NewServer(stub.handler())
+	defer server.Close()
+	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
+
+	accounts, err := client.Domain("accounts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := NewStateStore("employees")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.AddKey("passport", true).AddKey("department", false)
+	if _, err := accounts.DefineStateStore(context.Background(), spec, nil); err != nil {
+		t.Fatal(err)
+	}
+	store, err := StoreForDomain[string](accounts, "employees")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lastNamed := func() map[string]any {
+		bodies := stub.bodiesFor("/v1/state-stores/mutate")
+		op, _ := bodies[len(bodies)-1]["op"].(map[string]any)
+		entries, _ := op["named"].([]any)
+		out := make(map[string]any, len(entries))
+		for _, raw := range entries {
+			entry, _ := raw.(map[string]any)
+			vals, _ := entry["values"].([]any)
+			val, _ := vals[0].(map[string]any)
+			out[entry["name"].(string)] = val["value"]
+		}
+		return out
+	}
+
+	// 1A: Fluent value literal passportKeySet{}.WithPassport("P123").WithDepartment("eng")
+	if _, err := store.PutKeySet(context.Background(), "emp-1", "alice",
+		passportKeySet{}.WithPassport("P123").WithDepartment("eng"), ""); err != nil {
+		t.Fatal(err)
+	}
+	n1 := lastNamed()
+	if n1["passport"] != "P123" || n1["department"] != "eng" {
+		t.Fatalf("unexpected n1: %v", n1)
+	}
+
+	// 1B: Static factory one-liner
+	if _, err := store.PutKeySet(context.Background(), "emp-2", "bob",
+		passportKeySetWith("P222", "ops"), ""); err != nil {
+		t.Fatal(err)
+	}
+	n2 := lastNamed()
+	if n2["passport"] != "P222" || n2["department"] != "ops" {
+		t.Fatalf("unexpected n2: %v", n2)
+	}
+
+	// 2: Lambda / callback builder
+	if _, err := store.PutKeySet(context.Background(), "emp-3", "cara",
+		passportKeySetOf(func(k *passportKeySet) {
+			*k = k.WithPassport("P333").WithDepartment("eng")
+		}), ""); err != nil {
+		t.Fatal(err)
+	}
+	n3 := lastNamed()
+	if n3["passport"] != "P333" || n3["department"] != "eng" {
+		t.Fatalf("unexpected n3: %v", n3)
+	}
+
+	// 3: Single default string fallback -> maps to first declared key ("passport")
+	if _, err := store.PutWithKey(context.Background(), "emp-4", "dan", "P444", ""); err != nil {
+		t.Fatal(err)
+	}
+	n4 := lastNamed()
+	if len(n4) != 1 || n4["passport"] != "P444" {
+		t.Fatalf("unexpected n4: %v", n4)
+	}
+}

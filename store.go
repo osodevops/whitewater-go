@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 // StateStore is a thin facade over one node-side StateStore — the
@@ -25,10 +26,96 @@ import (
 // an already-declared store (named keys are declared at creation).
 // Named values are typed scalars — string, int/int64, bool, []byte, or
 // nil; a []any value carries one typed value per posting component.
+// StoreKeySet represents strongly-typed or inline secondary-key postings
+// for a StateStore or Store PutKeySet call. Embed BaseStoreKeySet in a
+// struct to support fluent value chaining:
+//
+//	type PassportKeySet struct{ whitewater.BaseStoreKeySet }
+//	func (k PassportKeySet) WithPassport(v string) PassportKeySet   { k.Put("passport", v); return k }
+//	func (k PassportKeySet) WithDepartment(v string) PassportKeySet { k.Put("department", v); return k }
+type StoreKeySet interface {
+	ToMap() map[string]any
+}
+
+// BaseStoreKeySet is the embeddable base for typed StoreKeySet structs.
+type BaseStoreKeySet struct {
+	keys map[string]any
+}
+
+// Put records a secondary-key value and returns the receiver for chaining.
+func (b *BaseStoreKeySet) Put(name string, value any) *BaseStoreKeySet {
+	if strings.TrimSpace(name) == "" {
+		panic("secondary key name must not be blank")
+	}
+	if b.keys == nil {
+		b.keys = make(map[string]any)
+	}
+	b.keys[name] = value
+	return b
+}
+
+// Get reads back a previously set secondary-key value.
+func (b BaseStoreKeySet) Get(name string) any {
+	if b.keys == nil {
+		return nil
+	}
+	return b.keys[name]
+}
+
+// IsEmpty reports whether no secondary keys have been populated.
+func (b BaseStoreKeySet) IsEmpty() bool {
+	return len(b.keys) == 0
+}
+
+// ToMap returns a shallow copy of the secondary-key postings.
+func (b BaseStoreKeySet) ToMap() map[string]any {
+	if len(b.keys) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(b.keys))
+	for k, v := range b.keys {
+		out[k] = v
+	}
+	return out
+}
+
+// NewStoreKeySet builds an ad-hoc StoreKeySet from alternating key/value pairs.
+func NewStoreKeySet(pairs ...any) *BaseStoreKeySet {
+	var ks BaseStoreKeySet
+	for i := 0; i+1 < len(pairs); i += 2 {
+		name, ok := pairs[i].(string)
+		if !ok {
+			panic("NewStoreKeySet expects string key names")
+		}
+		ks.Put(name, pairs[i+1])
+	}
+	return &ks
+}
+
+// BuildStoreKeySet builds an ad-hoc StoreKeySet via a callback.
+func BuildStoreKeySet(fn func(*BaseStoreKeySet)) *BaseStoreKeySet {
+	var ks BaseStoreKeySet
+	if fn != nil {
+		fn(&ks)
+	}
+	return &ks
+}
+
+var declaredDefaultKeys sync.Map
+
+func registerDefaultKey(storeName, defaultKey string) {
+	if storeName != "" && strings.TrimSpace(defaultKey) != "" {
+		if norm, err := dottedName(storeName); err == nil {
+			declaredDefaultKeys.Store(norm, defaultKey)
+		}
+	}
+}
+
 type StateStore struct {
-	transport *transport
-	name      string
-	namedKeys []NamedKey
+	transport  *transport
+	name       string
+	namedKeys  []NamedKey
+	defaultKey string
 }
 
 // NewStateStore returns an unbound declaration spec for
@@ -106,6 +193,58 @@ func (s *StateStore) bound() (*transport, error) {
 // Put inserts or replaces one row: named maps a declared named key to a
 // typed value (or []any for multi-component postings). An empty
 // mutationID generates one; supply a stable ID for idempotent retries.
+// WithDefaultKey binds the secondary-key name used by PutWithKey.
+func (s *StateStore) WithDefaultKey(defaultKeyName string) *StateStore {
+	if strings.TrimSpace(defaultKeyName) == "" {
+		panic("defaultKeyName must not be blank")
+	}
+	s.defaultKey = defaultKeyName
+	return s
+}
+
+func (s *StateStore) resolveDefaultKeyName() string {
+	if s.defaultKey != "" {
+		return s.defaultKey
+	}
+	if len(s.namedKeys) > 0 {
+		return s.namedKeys[0].Name
+	}
+	if v, ok := declaredDefaultKeys.Load(s.name); ok {
+		if str, ok := v.(string); ok && str != "" {
+			return str
+		}
+	}
+	return "default"
+}
+
+// PutKeySet inserts or replaces one row using a typed StoreKeySet.
+func (s *StateStore) PutKeySet(
+	ctx context.Context,
+	key, payload []byte,
+	keys StoreKeySet,
+	mutationID string,
+) (MutationResult, error) {
+	var named map[string]any
+	if keys != nil {
+		named = keys.ToMap()
+	}
+	return s.Put(ctx, key, payload, named, mutationID)
+}
+
+// PutWithKey inserts or replaces one row with a single default secondary-key string.
+func (s *StateStore) PutWithKey(
+	ctx context.Context,
+	key, payload []byte,
+	singleSecondaryKey string,
+	mutationID string,
+) (MutationResult, error) {
+	var named map[string]any
+	if singleSecondaryKey != "" {
+		named = map[string]any{s.resolveDefaultKeyName(): singleSecondaryKey}
+	}
+	return s.Put(ctx, key, payload, named, mutationID)
+}
+
 func (s *StateStore) Put(
 	ctx context.Context,
 	key, payload []byte,
@@ -421,6 +560,9 @@ func (c *StateStoresClient) Define(
 	})
 	if err != nil {
 		return nil, err
+	}
+	if len(spec.namedKeys) > 0 {
+		registerDefaultKey(spec.name, spec.namedKeys[0].Name)
 	}
 	spec.transport = c.transport
 	return spec, nil
