@@ -23,77 +23,20 @@ implementation details — cursors are opaque tokens, never parsed.
 - **Subscriptions** share durable acknowledged progress across
   cooperating members with lease fencing.
 
-## Usage
-
-### Domains — the strongly-typed front door
-
-A Domain owns every Feed it prefixes (`shop` owns `shop.orders`), so the
-friendliest surface navigates domain → feed → reader/writer:
+## Clients
 
 ```go
-shop, _ := client.Domain("shop")            // lazy handle — no I/O yet
-shop, _ := client.GetDomain(ctx, "shop")    // verifies + materializes now
-shop.CreateFeed(ctx, "orders")          // CREATE FEED shop.orders;
-
-shop.Feeds(ctx)                             // [shop.orders shop.returns]
-shop.FeedsMatching(ctx, "order")            // prefix-filtered names
-shop.Readers(ctx); shop.Writers(ctx)
-shop.Subscriptions(ctx); shop.Pipes(ctx)
-shop.Indexes(ctx);    shop.StateStores(ctx)
-shop.Refresh(ctx)                           // re-pull the snapshot
-
-orders, _ := shop.Feed("orders")            // Feed[string, string] — UTF-8 by default
-typed,  _ := whitewater.FeedForDomain[Order](shop, "orders")
-
-// Everything a service needs hangs off the Domain — relative names
-// resolve inside it:
-builder, _ := shop.CreateReader("orders")
-reader, _ := builder.ReaderID("fulfillment").  // durable identity — Kafka groupId
-    StartPoint(whitewater.StartBeginning()).   // first-time start — auto.offset.reset
-    MaxPageSize(256).
-    Open(ctx)                                // *FeedReader[string, string]
-
-wbuilder, _ := shop.CreateWriter("orders")
-writer, _ := wbuilder.WriterID("ingest").Open(ctx)   // declares shop.ingest
-
-// reader.ForEach pumps records one at a time — deliver, then ack each
-// page; return false or an error to stop with the page unacked:
-reader.ForEach(ctx, func(m whitewater.FeedMessage[string, string]) (bool, error) {
-    return handle(m) == nil, nil
-})
-// Typed feeds: NewReaderBuilder(client, shop, orders) takes *Feed[K,V].
+client := whitewater.NewClient("api-key",
+    []string{"https://node1:7070", "https://node2:7070", "https://node3:7070"},
+    30*time.Second)
 ```
 
-The first catalog accessor issues **one batched control read**
-(`describe domain` + every `show` listing) joined by `space_id` /
-`feed_id` and cached. `ReaderID` is the progress identity — reopening
-the same name resumes the acknowledged frontier, and `StartPoint` only
-applies at first declaration (the `auto.offset.reset` mapping). A feed
-outside the Domain's prefix fails at `Open`/`Declare`.
-
-### Record schemas
-
-Records stay schema-neutral bytes on the wire; a Feed can still declare
-schema metadata the catalog tracks for tooling, validation, and
-compatibility. The Domain's schema is the default every Feed inherits;
-a Feed's own declaration overrides the named sides:
-
-```go
-client.SetDomainSchema(ctx, "shop", &whitewater.FeedSchema{
-    Value: &whitewater.SchemaDecl{Format: "json", Subject: "order-v1"},
-})
-shop.SetFeedSchema(ctx, "orders", &whitewater.FeedSchema{
-    Key: &whitewater.SchemaDecl{Format: "text"},
-})
-
-schema, _   := shop.Schema(ctx)                  // the Domain default
-effective,_ := shop.FeedSchema(ctx, "orders")    // key=text, value=json/order-v1
-declared, _ := shop.DeclaredFeedSchema(ctx, "orders")
-shop.ClearFeedSchema(ctx, "orders")              // reverts to inheritance
-```
-
-Formats today: `json`, `jsonschema`, `avro`, `protobuf`, `text`, `bytes`, or `custom.<name>`;
-compatibility enforcement is a no-op until the registry contract lands.
+Everything a service needs hangs off the client — `CreateDomain`,
+`Domain`/`GetDomain` handles, WCL + typed commands, health and demand
+reports — and every Feed, Writer, Reader, Subscription, Member, Pipe,
+StateStore, and Index is reached **only** through a `Domain`. The typed
+path below binds codecs once; the wire-level escape hatches keep raw
+`[]byte` control.
 
 ### Typed feeds — the idiomatic path
 
@@ -171,83 +114,6 @@ strings both ways, so un-schema-backed JSON flows with zero binding.
 `RebindFeed`/`FeedOfDomain` with `BytesCodec()` is the escape hatch to
 raw bytes.
 
-### Permanent consumers — the Kafka loop without the plumbing
-
-`feed.Consumer(name)` binds the durable named Reader (the consumer-group
-equivalent) and owns the fetch → deliver → ack cycle: transient failures
-retry with backoff, a fenced session re-opens, progress resumes from the
-server-side cursor. Your code ranges a channel of decoded records:
-
-```go
-consumer := in.Consumer("enricher")
-for msg := range consumer.Messages(ctx) {   // msg.Value is UpdateRequest
-    process(msg)
-}
-if err := consumer.Err(); err != nil { ... } // startup refusal only
-
-// or the handler form, blocking until ctx cancel/Close:
-err := in.Consumer("enricher").Run(ctx, func(m FeedMessage[string, UpdateRequest]) error {
-    return process(m)
-})
-```
-
-- The page acks after every record's delivery succeeds — a handler
-  error (or an abandoned channel) leaves it unacked, so it redelivers
-  (at-least-once: dedupe effects via `RequestID`, route poison pills to
-  a DLQ yourself).
-- `Run`/`Err` return only for startup refusals and local errors — bad
-  names, denied auth — everything after the first open is supervised
-  forever. `Close()` signals stop from anywhere (SIGTERM handler or
-  inside the handler itself); `Wait()`/`Done()` await full stop.
-- `.StartAt`, `.MaxPageSize(n)`, `.Backoff(min, max)`, `.OnError(fn)`,
-  `.LastError()` tune and observe it; `feed.Subscribe` remains for
-  page-oriented control.
-
-A complete enrichment service — durable consumer, named-key fallback,
-DLQ, idempotent outputs, counters — is
-[examples/enrichusers](examples/enrichusers/main.go).
-
-### Wire-level API
-
-The raw `[]byte` API stays available for full control:
-
-```go
-// Provision a Domain, Feed, Writer, and session — every resource
-// hangs off the Domain; each method builds its WCL statement for you:
-shop, err := client.CreateDomain(ctx, "shop")
-_, err = shop.CreateFeed(ctx, "orders")
-_, err = shop.CreateWriterFeed(ctx, "orders-writer", whitewater.Rel("orders"))
-setup, err := shop.OpenWriterSession(ctx, "orders-writer")
-// setup.Results[0].Data holds {"session_epoch": N}
-//
-// …or raw WCL when a script is clearer:
-//   client.WCL(ctx, "CREATE DOMAIN shop; CREATE FEED shop.orders; ...")
-
-// Idempotent append — retrying with the same RequestID is safe.
-writer, _ := shop.Writer("orders-writer", sessionEpoch)
-eventTime := time.Now().UnixNano()
-appended, err := writer.Append(ctx, whitewater.AppendInput{
-    RequestID:   "a-stable-request-uuid",
-    Key:         []byte("order-42"),
-    Payload:     []byte("created"),
-    EventTimeNs: &eventTime,
-    Metadata:    map[string][]byte{"source": []byte("api")},
-})
-
-// Independent durable reader — declared inside the Domain too:
-_, _ = shop.CreateReaderFeed(ctx, "orders-reader",
-    whitewater.Rel("orders"), whitewater.StartBeginning())
-reader, _ := shop.Reader("orders-reader")
-session, err := reader.Open(ctx, 64)
-page, err := reader.Fetch(ctx, session, 128)
-for _, record := range page.Records {
-    process(record)
-}
-if page.DeliveredCursor != nil {
-    _, err = reader.Ack(ctx, session, *page.DeliveredCursor)
-}
-```
-
 ### Node-side StateStore
 
 Declare named keys on the spec, then bind typed codecs once — every
@@ -290,6 +156,153 @@ full guide and [docs/pipes.md](docs/pipes.md) for managed stream jobs
 collapses miss handling to one line: `feed.Load` remains the lighter one-shot history
 read into any `func([]Record) error` sink.
 
+### Wire-level API
+
+The raw `[]byte` API stays available for full control:
+
+```go
+// Provision a Domain, Feed, Writer, and session — every resource
+// hangs off the Domain; each method builds its WCL statement for you:
+shop, err := client.CreateDomain(ctx, "shop")
+_, err = shop.CreateFeed(ctx, "orders")
+_, err = shop.CreateWriterFeed(ctx, "orders-writer", whitewater.Rel("orders"))
+setup, err := shop.OpenWriterSession(ctx, "orders-writer")
+// setup.Results[0].Data holds {"session_epoch": N}
+//
+// …or raw WCL when a script is clearer:
+//   client.WCL(ctx, "CREATE DOMAIN shop; CREATE FEED shop.orders; ...")
+
+// Idempotent append — retrying with the same RequestID is safe.
+writer, _ := shop.Writer("orders-writer", sessionEpoch)
+eventTime := time.Now().UnixNano()
+appended, err := writer.Append(ctx, whitewater.AppendInput{
+    RequestID:   "a-stable-request-uuid",
+    Key:         []byte("order-42"),
+    Payload:     []byte("created"),
+    EventTimeNs: &eventTime,
+    Metadata:    map[string][]byte{"source": []byte("api")},
+})
+
+// Independent durable reader — declared inside the Domain too:
+_, _ = shop.CreateReaderFeed(ctx, "orders-reader",
+    whitewater.Rel("orders"), whitewater.StartBeginning())
+reader, _ := shop.Reader("orders-reader")
+session, err := reader.Open(ctx, 64)
+page, err := reader.Fetch(ctx, session, 128)
+for _, record := range page.Records {
+    process(record)
+}
+if page.DeliveredCursor != nil {
+    _, err = reader.Ack(ctx, session, *page.DeliveredCursor)
+}
+```
+
+## Domains — the strongly-typed front door
+
+A Domain owns every Feed it prefixes (`shop` owns `shop.orders`), so the
+friendliest surface navigates domain → feed → reader/writer:
+
+```go
+shop, _ := client.Domain("shop")            // lazy handle — no I/O yet
+shop, _ := client.GetDomain(ctx, "shop")    // verifies + materializes now
+shop.CreateFeed(ctx, "orders")          // CREATE FEED shop.orders;
+
+shop.Feeds(ctx)                             // [shop.orders shop.returns]
+shop.FeedsMatching(ctx, "order")            // prefix-filtered names
+shop.Readers(ctx); shop.Writers(ctx)
+shop.Subscriptions(ctx); shop.Pipes(ctx)
+shop.Indexes(ctx);    shop.StateStores(ctx)
+shop.Refresh(ctx)                           // re-pull the snapshot
+
+orders, _ := shop.Feed("orders")            // Feed[string, string] — UTF-8 by default
+typed,  _ := whitewater.FeedForDomain[Order](shop, "orders")
+
+// Everything a service needs hangs off the Domain — relative names
+// resolve inside it:
+builder, _ := shop.CreateReader("orders")
+reader, _ := builder.ReaderID("fulfillment").  // durable identity — Kafka groupId
+    StartPoint(whitewater.StartBeginning()).   // first-time start — auto.offset.reset
+    MaxPageSize(256).
+    Open(ctx)                                // *FeedReader[string, string]
+
+wbuilder, _ := shop.CreateWriter("orders")
+writer, _ := wbuilder.WriterID("ingest").Open(ctx)   // declares shop.ingest
+
+// reader.ForEach pumps records one at a time — deliver, then ack each
+// page; return false or an error to stop with the page unacked:
+reader.ForEach(ctx, func(m whitewater.FeedMessage[string, string]) (bool, error) {
+    return handle(m) == nil, nil
+})
+// Typed feeds: NewReaderBuilder(client, shop, orders) takes *Feed[K,V].
+```
+
+The first catalog accessor issues **one batched control read**
+(`describe domain` + every `show` listing) joined by `space_id` /
+`feed_id` and cached. `ReaderID` is the progress identity — reopening
+the same name resumes the acknowledged frontier, and `StartPoint` only
+applies at first declaration (the `auto.offset.reset` mapping). A feed
+outside the Domain's prefix fails at `Open`/`Declare`.
+
+### Record schemas
+
+Records stay schema-neutral bytes on the wire; a Feed can still declare
+schema metadata the catalog tracks for tooling, validation, and
+compatibility. The Domain's schema is the default every Feed inherits;
+a Feed's own declaration overrides the named sides:
+
+```go
+client.SetDomainSchema(ctx, "shop", &whitewater.FeedSchema{
+    Value: &whitewater.SchemaDecl{Format: "json", Subject: "order-v1"},
+})
+shop.SetFeedSchema(ctx, "orders", &whitewater.FeedSchema{
+    Key: &whitewater.SchemaDecl{Format: "text"},
+})
+
+schema, _   := shop.Schema(ctx)                  // the Domain default
+effective,_ := shop.FeedSchema(ctx, "orders")    // key=text, value=json/order-v1
+declared, _ := shop.DeclaredFeedSchema(ctx, "orders")
+shop.ClearFeedSchema(ctx, "orders")              // reverts to inheritance
+```
+
+Formats today: `json`, `jsonschema`, `avro`, `protobuf`, `text`, `bytes`, or `custom.<name>`;
+compatibility enforcement is a no-op until the registry contract lands.
+
+## Permanent consumers — the Kafka loop without the plumbing
+
+`feed.Consumer(name)` binds the durable named Reader (the consumer-group
+equivalent) and owns the fetch → deliver → ack cycle: transient failures
+retry with backoff, a fenced session re-opens, progress resumes from the
+server-side cursor. Your code ranges a channel of decoded records:
+
+```go
+consumer := in.Consumer("enricher")
+for msg := range consumer.Messages(ctx) {   // msg.Value is UpdateRequest
+    process(msg)
+}
+if err := consumer.Err(); err != nil { ... } // startup refusal only
+
+// or the handler form, blocking until ctx cancel/Close:
+err := in.Consumer("enricher").Run(ctx, func(m FeedMessage[string, UpdateRequest]) error {
+    return process(m)
+})
+```
+
+- The page acks after every record's delivery succeeds — a handler
+  error (or an abandoned channel) leaves it unacked, so it redelivers
+  (at-least-once: dedupe effects via `RequestID`, route poison pills to
+  a DLQ yourself).
+- `Run`/`Err` return only for startup refusals and local errors — bad
+  names, denied auth — everything after the first open is supervised
+  forever. `Close()` signals stop from anywhere (SIGTERM handler or
+  inside the handler itself); `Wait()`/`Done()` await full stop.
+- `.StartAt`, `.MaxPageSize(n)`, `.Backoff(min, max)`, `.OnError(fn)`,
+  `.LastError()` tune and observe it; `feed.Subscribe` remains for
+  page-oriented control.
+
+A complete enrichment service — durable consumer, named-key fallback,
+DLQ, idempotent outputs, counters — is
+[examples/enrichusers](examples/enrichusers/main.go).
+
 ### Error handling
 
 `call` failures return `*whitewater.Error`; class helpers select policy:
@@ -305,7 +318,7 @@ default:                               // refused; fix the request
 }
 ```
 
-### Pipes, indexes, and operations
+## Pipes, indexes, and operations
 
 Managed Pipes and replicated Indexes share the same topology-free model
 — names, never partitions or Nodes:
@@ -400,6 +413,13 @@ This SDK implements the versioned wire contract in
 decimal-string signed 64-bit nanoseconds, base64 binary fields, opaque
 cursors, UUID request ids, and the shared structured error codes.
 
+## Development
+
+```sh
+go build ./...
+go test ./...   # unit tests; conformance skips without env vars
+```
+
 ## Unit-test doubles
 
 `testkit.NewRiverbed(t)` serves the wire contract on a loopback
@@ -426,9 +446,3 @@ export WHITEWATER_FIXTURE_DIR=/path/to/whitewater/sdk/spec/conformance
 go test -run Conformance -v .
 ```
 
-## Development
-
-```sh
-go build ./...
-go test ./...   # unit tests; conformance skips without env vars
-```
