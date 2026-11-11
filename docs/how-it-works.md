@@ -144,7 +144,7 @@ Two managed wrappers sit on top of those primitives:
 - **`Domain.StateStore(relative)` / `NewStateStore(relative)`** — the
   thin facade over the node-side StateStore (durable, RF3, Fjall):
   declare with `domain.DefineStateStore(ctx, spec, source)` after
-  `AddKey(name, unique)` (up to 10 named secondary keys), then
+  `AddUniqueKey`/`AddNonUniqueKey` (up to 10 named secondary keys), then
   `Put(key, payload, named, mutationID)` with typed values,
   `Get(key, strict, waitMs)`, `GetBy(namedKey, value, ...)` (non-unique
   — `StoreRows`), `Delete`, `Iterate`/`Page`, `Clear`, `Drop`. The

@@ -67,7 +67,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	panes.AddKey("key", false).AddKey("pane", false)
+	panes.AddNonUniqueKey("key").AddNonUniqueKey("pane")
 	if _, err := pipedemo.DefineStateStore(ctx, panes, nil); err != nil {
 		log.Fatal(err)
 	}

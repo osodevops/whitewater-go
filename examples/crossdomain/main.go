@@ -68,7 +68,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	profiles.AddKey("email", true, whitewater.JsonExtractor("$.email"))
+	profiles.AddUniqueKey("email", whitewater.JsonExtractor("$.email"))
 	if _, err := warehouse.DefineStateStore(ctx, profiles, nil); err != nil {
 		log.Fatal(err)
 	}

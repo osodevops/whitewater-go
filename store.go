@@ -14,7 +14,7 @@ import (
 // Iterate:
 //
 //	spec, _ := whitewater.NewStateStore("employees")
-//	spec.AddKey("passport", true).AddKey("department", false)
+//	spec.AddUniqueKey("passport").AddNonUniqueKey("department")
 //	store, err := domain.DefineStateStore(ctx, spec)
 //
 //	_, _ = store.Put(ctx, []byte("user-1"), []byte("profile-1"),
@@ -22,8 +22,9 @@ import (
 //	row, _ := store.Get(ctx, []byte("user-1"), false, 0)
 //	rows, _ := store.GetBy(ctx, "department", "eng", 0, false, 0)
 //
-// AddKey records declaration intent used by Define; it does not mutate
-// an already-declared store (named keys are declared at creation).
+// AddUniqueKey/AddNonUniqueKey record declaration intent used by
+// Define; they do not mutate an already-declared store (named keys are
+// declared at creation).
 // Named values are typed scalars — string, int/int64, bool, []byte, or
 // nil; a []any value carries one typed value per posting component.
 // StoreKeySet represents strongly-typed or inline secondary-key postings
@@ -142,13 +143,11 @@ func newStateStore(t *transport, name string) (*StateStore, error) {
 
 // AddKey declares a named secondary key for Define (at most
 // MaxNamedKeys) and returns the spec for chaining. Non-unique keys map
-// one value to every matching primary row; unique enforces one row per
-// value.
-// AddKey declares a named secondary key for Define (at most
-// MaxNamedKeys). Non-unique keys map one value to every primary row
-// carrying it; unique enforces one row per value. An optional Extractor
-// declares how replay projects each source-Feed record to this key's
-// values — required on feed-sourced stores, refused on manual ones.
+// one value to every primary row carrying it; unique enforces one row
+// per value. An optional Extractor declares how replay projects each
+// source-Feed record to this key's values — required on feed-sourced
+// stores, refused on manual ones. Prefer AddUniqueKey/AddNonUniqueKey —
+// they name the flag at the call site.
 func (s *StateStore) AddKey(namedKey string, unique bool, extractors ...Extractor) *StateStore {
 	if strings.TrimSpace(namedKey) == "" {
 		panic("named key is required")
@@ -171,6 +170,18 @@ func (s *StateStore) AddKey(namedKey string, unique bool, extractors ...Extracto
 	}
 	s.namedKeys = append(s.namedKeys, key)
 	return s
+}
+
+// AddUniqueKey declares a unique named key — one value resolves to at
+// most one primary row (AddKey(namedKey, true, extractors...)).
+func (s *StateStore) AddUniqueKey(namedKey string, extractors ...Extractor) *StateStore {
+	return s.AddKey(namedKey, true, extractors...)
+}
+
+// AddNonUniqueKey declares a non-unique named key — one value lists
+// every matching primary row (AddKey(namedKey, false, extractors...)).
+func (s *StateStore) AddNonUniqueKey(namedKey string, extractors ...Extractor) *StateStore {
+	return s.AddKey(namedKey, false, extractors...)
 }
 
 // NamedKeys returns the declared named keys in declaration order.

@@ -86,7 +86,7 @@ func TestDefineEmitsNamedKeysAndBindsTheFacade(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec.AddKey("passport", true).AddKey("department", false)
+	spec.AddUniqueKey("passport").AddNonUniqueKey("department")
 	store, err := client.stateStores.Define(context.Background(), spec, "")
 	if err != nil {
 		t.Fatal(err)
@@ -127,7 +127,7 @@ func TestDefineFeedSourcedNamedKeysNeedExtractors(t *testing.T) {
 
 	// A feed-sourced named key without a projection is a declaration bug.
 	spec, _ := NewStateStore("accounts.s")
-	spec.AddKey("k", false)
+	spec.AddNonUniqueKey("k")
 	if _, err := client.stateStores.Define(
 		context.Background(), spec, "accounts.events"); err == nil ||
 		!strings.Contains(err.Error(), "require an extractor") {
@@ -135,11 +135,32 @@ func TestDefineFeedSourcedNamedKeysNeedExtractors(t *testing.T) {
 	}
 	// An extractor on a manual store is refused — Puts carry the values.
 	manual, _ := NewStateStore("accounts.m")
-	manual.AddKey("k", false, MetadataExtractor("pp"))
+	manual.AddNonUniqueKey("k", MetadataExtractor("pp"))
 	if _, err := client.stateStores.Define(
 		context.Background(), manual, ""); err == nil ||
 		!strings.Contains(err.Error(), "manual store") {
 		t.Fatalf("expected manual-store extractor refusal, got %v", err)
+	}
+}
+
+func TestExplicitUniqueAndNonUniqueHelpersSetTheFlag(t *testing.T) {
+	spec, err := NewStateStore("accounts.flags")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.AddUniqueKey("passport").AddNonUniqueKey("department")
+	keys := spec.NamedKeys()
+	if !keys[0].Unique || keys[1].Unique {
+		t.Fatalf("wrong unique flags: %+v", keys)
+	}
+	fs, err := NewStateStore("accounts.fs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.AddUniqueKey("pp", MetadataExtractor("pp")).AddNonUniqueKey("dept", JsonExtractor("dept"))
+	fsKeys := fs.NamedKeys()
+	if !fsKeys[0].Unique || fsKeys[0].Extractor == nil || fsKeys[1].Unique {
+		t.Fatalf("wrong feed-sourced keys: %+v", fsKeys)
 	}
 }
 
@@ -150,8 +171,8 @@ func TestDefineFeedSourcedEmitsExtractors(t *testing.T) {
 	client := NewClient("test-key", []string{server.URL}, 5*time.Second)
 
 	spec, _ := NewStateStore("accounts.tagged")
-	spec.AddKey("passport", true, MetadataExtractor("pp"))
-	spec.AddKey("department", false, JsonExtractor("dept"))
+	spec.AddUniqueKey("passport", MetadataExtractor("pp"))
+	spec.AddNonUniqueKey("department", JsonExtractor("dept"))
 	if _, err := client.stateStores.Define(
 		context.Background(), spec, "accounts.events"); err != nil {
 		t.Fatal(err)
@@ -366,7 +387,7 @@ func TestStoreKeySetSupportsAllInlineStylesAndSingleStringFallback(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec.AddKey("passport", true).AddKey("department", false)
+	spec.AddUniqueKey("passport").AddNonUniqueKey("department")
 	if _, err := accounts.DefineStateStore(context.Background(), spec, nil); err != nil {
 		t.Fatal(err)
 	}

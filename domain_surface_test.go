@@ -183,7 +183,7 @@ func TestDomainDefineStateStoreRescopesSpec(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec.AddKey("department", false, JsonExtractor("dept"))
+	spec.AddNonUniqueKey("department", JsonExtractor("dept"))
 	if _, err := accounts.DefineStateStore(ctx, spec, Rel("events")); err != nil {
 		t.Fatal(err)
 	}

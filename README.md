@@ -256,10 +256,13 @@ Put/Get/Iterate serializes through them:
 ```go
 accounts, _ := client.CreateDomain(ctx, "accounts")
 spec, _ := whitewater.NewStateStore("employees")           // resolves to accounts.employees
-spec.AddKey("passport", true).AddKey("department", false)  // up to 10 named keys
+spec.AddUniqueKey("passport").AddNonUniqueKey("department")  // up to 10 named keys
 _, err := accounts.DefineStateStore(ctx, spec, nil)        // nil source = manual store
 
 profiles, _ := whitewater.StoreForDomain[Profile](accounts, "employees")
+// named-key postings: a fluent StoreKeySet struct, or a raw map —
+_, err = profiles.PutKeySet(ctx, "user-1", profile,
+    PassportKeySet{}.WithPassport("P111").WithDepartment("eng"), "")
 _, err = profiles.Put(ctx, "user-1", profile,
     map[string]any{"passport": "P111", "department": "eng"}, "")
 
@@ -382,7 +385,7 @@ escape hatches for the same wire contract.
 | Temporary fetches | `Feed.Fetch(opts)` / `Domain.FeedOps().TemporaryFetch` — `after_event_time_ns` seeks, `new_only`, `tail` + `wait_ms` long-poll · `Feed.Load(start, sink)` · `Feed.Records` |
 | Consumers | `feed.Consumer(reader)` → `FeedConsumer`: `StartAt` `MaxPageSize` `Backoff` `OnError` `LastError` `Err` · `Messages` channel / `Run` / `Close` `Wait` `Done` |
 | Subscription members | `Domain.MemberClient(sub)` / `Domain.SubscriptionRef(name).MemberClient()`: `Join` `Claim` `Renew` `Release` `Fetch` `Ack` — shared progress + RF3 work leases · `Feed.Subscribe` `Domain.Subscribe` managed loops |
-| StateStores | `Domain.StateStore` `Domain.Store` / `StoreForDomain[V]` `StoreOfDomain[K,V]` `NewStateStore(relative)`: `AddKey` `NamedKeys` `Put` `Get` `GetBy` `Delete` `Page` `Iterate` `Clear` `Drop` · `Domain.DefineStateStore` `DropStateStore` — source Feeds may cross Domains |
+| StateStores | `Domain.StateStore` `Domain.Store` / `StoreForDomain[V]` `StoreOfDomain[K,V]` `NewStateStore(relative)`: `AddUniqueKey` `AddNonUniqueKey` `AddKey` `NamedKeys` `Put` `Get` `GetBy` `Delete` `Page` `Iterate` `Clear` `Drop` · `Domain.DefineStateStore` `DropStateStore` — source Feeds may cross Domains |
 | Indexes | `Domain.QueryIndex(relative, IndexPredicate)` → `IndexPage` · `IndexExact` `IndexPrefix` `IndexRange` + `InclusiveBound` `ExclusiveBound` |
 | Pipes | `Domain.DefineForwardPipe` `DefineEnrichPipe` `DefineWindowPipe` — every endpoint a `ScopedRef` (`Rel`/`Abs`/`*Feed`/`*Store`/`SubscriptionRef`); Pipe + input Subscription stay in-domain · `Domain.Pipe(relative)` → `Describe` `Pause` `Resume` `Drop` · `PipeInfos` · `ForwardOperation` `EnrichOperation` `WindowOperation` + `EnrichOptions` `WindowOptions` · `CountAggregation` `SumAggregation` `AverageAggregation` · durations are `time.Duration` |
 | Catalog lifecycle | `Create*` `Describe*` `Rename*` `Drop*` `List*` on `Domain` for Feed, Writer, Reader, Subscription · client-level `CreateDomain` `DescribeDomain` `RenameDomain` `DropDomain` `ListDomains` `CreateRole` `DescribeRole` `RenameRole` `DropRole` `ListRoles` `ListGrants` · `Domain.OpenWriterSession` `SeekReader` |

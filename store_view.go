@@ -46,7 +46,7 @@ type RowsResult[K comparable, V any] struct {
 // data operations, not declaration:
 //
 //	spec, _ := whitewater.NewStateStore("accounts.employees")
-//	spec.AddKey("passport", true)
+//	spec.AddUniqueKey("passport")
 //	raw, _ := domain.DefineStateStore(ctx, spec)
 //	store := whitewater.StoreOfBound[string, Profile](raw, kc, vc)
 type Store[K comparable, V any] struct {

@@ -232,7 +232,7 @@ func TestStoreRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec.AddKey("department", false)
+	spec.AddNonUniqueKey("department")
 	accounts, err := client.Domain("accounts")
 	if err != nil {
 		t.Fatal(err)

@@ -8,14 +8,14 @@ projection, and every operation is an HTTP call with freshness evidence.
 ```go
 accounts, _ := client.CreateDomain(ctx, "accounts")
 spec, _ := whitewater.NewStateStore("employees")     // -> accounts.employees
-spec.AddKey("passport", true).            // unique: one row per value
-      AddKey("department", false)         // non-unique: value -> many rows
+spec.AddUniqueKey("passport").            // unique: one row per value
+      AddNonUniqueKey("department")   // non-unique: value -> many rows
 
 store, err := accounts.DefineStateStore(ctx, spec, nil)
 //                                            nil source = manual store
 ```
 
-`AddKey` records declaration intent used by `Define` — named keys are
+`AddUniqueKey`/`AddNonUniqueKey` record declaration intent used by `Define` — named keys are
 declared at creation; at most `whitewater.MaxNamedKeys` (10). Adding a
 key to an existing store has no effect server-side.
 
@@ -155,8 +155,8 @@ an `Extractor`:
 
 ```go
 spec, _ = whitewater.NewStateStore("tagged")
-spec.AddKey("passport", true, whitewater.MetadataExtractor("pp"))
-spec.AddKey("department", false, whitewater.JsonExtractor("dept"))
+spec.AddUniqueKey("passport", whitewater.MetadataExtractor("pp"))
+spec.AddNonUniqueKey("department", whitewater.JsonExtractor("dept"))
 store, err = accounts.DefineStateStore(ctx, spec, whitewater.Rel("events"))
 ```
 
@@ -201,7 +201,7 @@ c.Commands(ctx, []map[string]any{{
 
 | Where | Type | Meaning / remedy |
 |---|---|---|
-| `AddKey` #11 / duplicate / blank | `panic` | Declaration contract (10-key bound, distinct names). |
+| `AddUniqueKey`/`AddNonUniqueKey`/`AddKey` #11 / duplicate / blank | `panic` | Declaration contract (10-key bound, distinct names). |
 | `Define` spec + `source` + bare named keys | `error` | Feed-sourced keys need an `Extractor` — checked before the call. |
 | `Define` manual spec + `Extractor` | `error` | Extractors apply to feed-sourced stores only. |
 | Data op on unbound spec | `error` | `NewStateStore` builds a spec; bind via `Domain.DefineStateStore` or `Domain.StateStore(name)`. |

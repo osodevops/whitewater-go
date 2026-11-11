@@ -40,8 +40,8 @@ _, err = ops.CreateSubscription(ctx, "orders.sub",
 ```go
 spec, err := whitewater.NewStateStore("customers")      // -> ops.customers
 if err != nil { /* invalid relative name */ }
-spec.AddKey("email", true, whitewater.JsonExtractor("$.email")).
-    AddKey("tier", false, whitewater.JsonExtractor("$.tier"))
+spec.AddUniqueKey("email", whitewater.JsonExtractor("$.email")).
+    AddNonUniqueKey("tier", whitewater.JsonExtractor("$.tier"))
 // the source Feed may cross Domains — pass its *Feed handle or Abs(...)
 store, err := ops.DefineStateStore(ctx, spec, whitewater.Rel("customer.changes"))
 ```
@@ -89,7 +89,7 @@ panes, err := whitewater.NewStateStore("order.counts")   // -> ops.order.counts
 if err != nil {
     // handle
 }
-panes.AddKey("key", false).AddKey("pane", false)
+panes.AddNonUniqueKey("key").AddNonUniqueKey("pane")
 _, err = ops.DefineStateStore(ctx, panes, nil)
 
 _, err = ops.DefineWindowPipe(ctx,

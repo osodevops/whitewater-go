@@ -53,7 +53,7 @@ func TestLiveNamedKeyStoreLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec.AddKey("passport", true).AddKey("department", false)
+	spec.AddUniqueKey("passport").AddNonUniqueKey("department")
 	store, err := client.stateStores.Define(ctx, spec, "")
 	if err != nil {
 		t.Fatal(err)
