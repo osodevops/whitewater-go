@@ -37,9 +37,9 @@ profiles, _ := whitewater.StoreForDomain[Profile](accounts, "employees")
 //   StoreOfDomain(accounts, "employees", StringCodec(), proto)
 
 _, err = profiles.Put(ctx, "user-1", profile,
-    map[string]any{"passport": "P111"}, "")
-row, _ := profiles.Get(ctx, "user-1", true, 500)   // row.Value is Profile
-_ = profiles.Iterate(ctx, 256, func(r whitewater.Row[string, Profile]) error {
+    map[string]any{"passport": "P111"})
+row, _ := profiles.Get(ctx, "user-1", whitewater.Strict(500*time.Millisecond))   // row.Value is Profile
+_ = profiles.Iterate(ctx, func(r whitewater.Row[string, Profile]) error {
     return export(r)
 })
 
@@ -73,15 +73,14 @@ func (k PassportKeySet) WithDepartment(v string) PassportKeySet {
 
 // 1. Fluent value literal:
 _, err = profiles.PutKeySet(ctx, "emp-1", profile,
-    PassportKeySet{}.WithPassport("P123").WithDepartment("eng"), "")
+    PassportKeySet{}.WithPassport("P123").WithDepartment("eng"))
 
 // 2. Single default string fallback (maps to the store's first declared key):
-_, err = profiles.PutWithKey(ctx, "emp-1", profile, profile.Passport, "")
+_, err = profiles.PutWithKey(ctx, "emp-1", profile, profile.Passport)
 
 // 3. Raw map is still supported for dynamic keys:
 _, err = store.Put(ctx, []byte("user-1"), []byte("profile-1"),
-    map[string]any{"passport": "P111", "department": "eng", "score": 42},
-    "")                                    // "" auto-generates mutation_id
+    map[string]any{"passport": "P111", "department": "eng", "score": 42})   // mutation_id auto-generated
 _, err = store.Delete(ctx, []byte("user-1"), "stable-mutation-uuid")
 ```
 
@@ -93,18 +92,18 @@ _, err = store.Delete(ctx, []byte("user-1"), "stable-mutation-uuid")
 - Named values must match the store's declared keys — the server
   refuses undeclared names. `unique` claims arbitrate
   first-committed-wins by journal order.
-- `mutationID` is the idempotency identity: retry a timed-out Put with
-  the same ID and it dedupes; reuse it with different contents and it
-  conflicts.
+- `mutationID` is the optional last argument: pass a stable ID so a
+  retried Put dedupes; omit it and one is generated per call.
 
 ## Reading
 
 ```go
-row, err := store.Get(ctx, []byte("user-1"), false, 0)   // *StoreRow | nil
+row, err := store.Get(ctx, []byte("user-1"))                                   // *StoreRow | nil
+row, err  = store.Get(ctx, []byte("user-1"), whitewater.Strict(500*time.Millisecond))  // bounded-wait for freshness
 row.Payload                        // []byte
 row.Freshness                      // AppliedSeq / CommittedSeq / Behind / ServedBy
 
-rows, err := store.GetBy(ctx, "department", "eng", 0, false, 0)
+rows, err := store.GetBy(ctx, "department", "eng")
 rows.Rows                          // []StoreRow — every match
 rows.Freshness.ServedBy            // which Node answered
 ```
@@ -118,11 +117,11 @@ honestly.
 ## Iterating
 
 ```go
-err = store.Iterate(ctx, 256, func(row StoreRow) error {
+err = store.Iterate(ctx, func(row StoreRow) error {
     export(row)
     return nil
-})
-page, err := store.Page(ctx, afterKey, 256)   // one bounded page
+}, whitewater.Limit(256))
+page, err := store.Page(ctx, whitewater.After(afterKey), whitewater.Limit(256))   // one bounded page
 page.NextKey                                   // continuation
 page.PinnedSeq                                 // journal position pinned to
 ```
@@ -134,7 +133,7 @@ freshness evidence.
 ## Lifecycle
 
 ```go
-_, err = store.Clear(ctx, "")                 // one journaled ClearAll
+_, err = store.Clear(ctx)                 // one journaled ClearAll
 _, err = accounts.DropStateStore(ctx, "employees")   // or store.Drop(ctx)
 ```
 

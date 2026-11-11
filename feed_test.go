@@ -622,7 +622,7 @@ func TestStoreTypedPutGetAndNamedLookup(t *testing.T) {
 	}
 	if _, err := store.Put(
 		context.Background(), "user-1", orderPayload{ID: "user-1", Total: 42},
-		map[string]any{"passport": "P111"}, ""); err != nil {
+		map[string]any{"passport": "P111"}); err != nil {
 		t.Fatal(err)
 	}
 	mutations := stub.bodiesFor("/v1/state-stores/mutate")
@@ -639,7 +639,7 @@ func TestStoreTypedPutGetAndNamedLookup(t *testing.T) {
 		t.Fatalf("payload = %v", op["payload_base64"])
 	}
 
-	row, err := store.Get(context.Background(), "user-1", false, 0)
+	row, err := store.Get(context.Background(), "user-1")
 	if err != nil || row == nil {
 		t.Fatalf("get = %v err=%v", row, err)
 	}
@@ -650,7 +650,7 @@ func TestStoreTypedPutGetAndNamedLookup(t *testing.T) {
 		t.Fatalf("applied cursor = %v", row.AppliedCursor)
 	}
 
-	result, err := store.GetBy(context.Background(), "passport", "P111", 0, false, 0)
+	result, err := store.GetBy(context.Background(), "passport", "P111")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -671,18 +671,16 @@ func TestStoreTypedIterateAndDeleteAndRebind(t *testing.T) {
 		t.Fatal(err)
 	}
 	var visited []string
-	if err := store.Iterate(
-		context.Background(), 64,
-		func(row Row[string, orderPayload]) error {
-			visited = append(visited, row.Key)
-			return nil
-		}); err != nil {
+	if err := store.Iterate(context.Background(), func(row Row[string, orderPayload]) error {
+		visited = append(visited, row.Key)
+		return nil
+	}, Limit(64)); err != nil {
 		t.Fatal(err)
 	}
 	if len(visited) != 1 || visited[0] != "user-1" {
 		t.Fatalf("iterated = %v", visited)
 	}
-	if _, err := store.Delete(context.Background(), "user-1", ""); err != nil {
+	if _, err := store.Delete(context.Background(), "user-1"); err != nil {
 		t.Fatal(err)
 	}
 	mutations := stub.bodiesFor("/v1/state-stores/mutate")
@@ -694,7 +692,7 @@ func TestStoreTypedIterateAndDeleteAndRebind(t *testing.T) {
 
 	// Rebind to raw payloads — no wire call to rebind.
 	rawStore := RebindStore(store, StringCodec(), BytesCodec())
-	page, err := rawStore.Page(context.Background(), nil, 1)
+	page, err := rawStore.Page(context.Background(), Limit(1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -713,7 +711,7 @@ func TestStoreEncodeFailureSurfaces(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := store.Put(
-		context.Background(), "k", orderPayload{}, nil, ""); err == nil ||
+		context.Background(), "k", orderPayload{}, nil); err == nil ||
 		!strings.Contains(err.Error(), "encode") {
 		t.Fatalf("expected encode error, got %v", err)
 	}

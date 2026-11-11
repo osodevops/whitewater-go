@@ -60,15 +60,15 @@ func TestLiveNamedKeyStoreLifecycle(t *testing.T) {
 	}
 
 	if _, err := store.Put(ctx, []byte("user-1"), []byte("profile-1"),
-		map[string]any{"passport": "P111", "department": "eng"}, ""); err != nil {
+		map[string]any{"passport": "P111", "department": "eng"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Put(ctx, []byte("user-2"), []byte("profile-2"),
-		map[string]any{"passport": "P222", "department": "eng"}, ""); err != nil {
+		map[string]any{"passport": "P222", "department": "eng"}); err != nil {
 		t.Fatal(err)
 	}
 
-	found, err := store.Get(ctx, []byte("user-1"), true, 1000)
+	found, err := store.Get(ctx, []byte("user-1"), Strict(1000*time.Millisecond))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestLiveNamedKeyStoreLifecycle(t *testing.T) {
 		t.Fatal("strict read must not report behind")
 	}
 
-	team, err := store.GetBy(ctx, "department", "eng", 0, true, 1000)
+	team, err := store.GetBy(ctx, "department", "eng", Strict(1000*time.Millisecond))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestLiveNamedKeyStoreLifecycle(t *testing.T) {
 		t.Fatalf("department rows = %d, want 2", len(team.Rows))
 	}
 
-	solo, err := store.GetBy(ctx, "passport", "P222", 0, false, 0)
+	solo, err := store.GetBy(ctx, "passport", "P222")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,23 +96,23 @@ func TestLiveNamedKeyStoreLifecycle(t *testing.T) {
 	}
 
 	var keys []string
-	if err := store.Iterate(ctx, 256, func(row StoreRow) error {
+	if err := store.Iterate(ctx, func(row StoreRow) error {
 		keys = append(keys, string(row.Key))
 		return nil
-	}); err != nil {
+	}, Limit(256)); err != nil {
 		t.Fatal(err)
 	}
 	if len(keys) != 2 {
 		t.Fatalf("iterate keys = %v", keys)
 	}
 
-	if _, err := store.Clear(ctx, ""); err != nil {
+	if _, err := store.Clear(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if found, err := store.Get(ctx, []byte("user-1"), false, 0); err != nil || found != nil {
+	if found, err := store.Get(ctx, []byte("user-1")); err != nil || found != nil {
 		t.Fatalf("cleared get = %+v, %v", found, err)
 	}
-	empty, err := store.GetBy(ctx, "department", "eng", 0, true, 1000)
+	empty, err := store.GetBy(ctx, "department", "eng", Strict(1000*time.Millisecond))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -226,8 +226,7 @@ func TestPutGetByDeleteCarryWireShapes(t *testing.T) {
 	ctx := context.Background()
 
 	result, err := store.Put(ctx, []byte("user-1"), []byte("profile-1"),
-		map[string]any{"passport": "P111", "department": "eng", "score": 42},
-		"")
+		map[string]any{"passport": "P111", "department": "eng", "score": 42})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +255,7 @@ func TestPutGetByDeleteCarryWireShapes(t *testing.T) {
 		t.Fatalf("score value = %v", s0)
 	}
 
-	found, err := store.Get(ctx, []byte("user-1"), true, 250)
+	found, err := store.Get(ctx, []byte("user-1"), Strict(250*time.Millisecond))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +270,7 @@ func TestPutGetByDeleteCarryWireShapes(t *testing.T) {
 		t.Fatalf("lookup = %v", lookups[0])
 	}
 
-	rows, err := store.GetBy(ctx, "department", "eng", 0, false, 0)
+	rows, err := store.GetBy(ctx, "department", "eng")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +282,7 @@ func TestPutGetByDeleteCarryWireShapes(t *testing.T) {
 		t.Fatalf("get-by = %v", getBys[0])
 	}
 
-	if _, err := store.Delete(ctx, []byte("user-1"), ""); err != nil {
+	if _, err := store.Delete(ctx, []byte("user-1")); err != nil {
 		t.Fatal(err)
 	}
 	op, _ = stub.bodiesFor("/v1/state-stores/mutate")[1]["op"].(map[string]any)
@@ -314,10 +313,10 @@ func TestIteratePagesUntilExhaustedThenClearAndDrop(t *testing.T) {
 	ctx := context.Background()
 
 	var keys []string
-	err := store.Iterate(ctx, 100, func(row StoreRow) error {
+	err := store.Iterate(ctx, func(row StoreRow) error {
 		keys = append(keys, string(row.Key))
 		return nil
-	})
+	}, Limit(100))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,7 +331,7 @@ func TestIteratePagesUntilExhaustedThenClearAndDrop(t *testing.T) {
 		t.Fatalf("continuation = %v", pages[1]["after_key_base64"])
 	}
 
-	if _, err := store.Clear(ctx, ""); err != nil {
+	if _, err := store.Clear(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Drop(ctx); err != nil {
@@ -412,7 +411,7 @@ func TestStoreKeySetSupportsAllInlineStylesAndSingleStringFallback(t *testing.T)
 
 	// 1A: Fluent value literal passportKeySet{}.WithPassport("P123").WithDepartment("eng")
 	if _, err := store.PutKeySet(context.Background(), "emp-1", "alice",
-		passportKeySet{}.WithPassport("P123").WithDepartment("eng"), ""); err != nil {
+		passportKeySet{}.WithPassport("P123").WithDepartment("eng")); err != nil {
 		t.Fatal(err)
 	}
 	n1 := lastNamed()
@@ -422,7 +421,7 @@ func TestStoreKeySetSupportsAllInlineStylesAndSingleStringFallback(t *testing.T)
 
 	// 1B: Static factory one-liner
 	if _, err := store.PutKeySet(context.Background(), "emp-2", "bob",
-		passportKeySetWith("P222", "ops"), ""); err != nil {
+		passportKeySetWith("P222", "ops")); err != nil {
 		t.Fatal(err)
 	}
 	n2 := lastNamed()
@@ -434,7 +433,7 @@ func TestStoreKeySetSupportsAllInlineStylesAndSingleStringFallback(t *testing.T)
 	if _, err := store.PutKeySet(context.Background(), "emp-3", "cara",
 		passportKeySetOf(func(k *passportKeySet) {
 			*k = k.WithPassport("P333").WithDepartment("eng")
-		}), ""); err != nil {
+		})); err != nil {
 		t.Fatal(err)
 	}
 	n3 := lastNamed()
@@ -443,7 +442,7 @@ func TestStoreKeySetSupportsAllInlineStylesAndSingleStringFallback(t *testing.T)
 	}
 
 	// 3: Single default string fallback -> maps to first declared key ("passport")
-	if _, err := store.PutWithKey(context.Background(), "emp-4", "dan", "P444", ""); err != nil {
+	if _, err := store.PutWithKey(context.Background(), "emp-4", "dan", "P444"); err != nil {
 		t.Fatal(err)
 	}
 	n4 := lastNamed()

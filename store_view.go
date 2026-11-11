@@ -39,8 +39,8 @@ type RowsResult[K comparable, V any] struct {
 //
 //	store, _ := whitewater.StoreOfDomain(accounts, "employees",
 //	    whitewater.StringCodec(), whitewater.JSONCodec[Profile]())
-//	store.Put(ctx, "user-1", profile, map[string]any{"passport": "P111"}, "")
-//	row, _ := store.Get(ctx, "user-1", false, 0)   // row.Value is Profile
+//	store.Put(ctx, "user-1", profile, map[string]any{"passport": "P111"})
+//	row, _ := store.Get(ctx, "user-1")   // row.Value is Profile
 //
 // Declare named keys on the raw spec first — Store binds codecs for
 // data operations, not declaration:
@@ -119,18 +119,19 @@ func (s *Store[K, V]) WithDefaultKey(defaultKeyName string) *Store[K, V] {
 }
 
 // PutKeySet inserts or replaces one row using a typed StoreKeySet.
+// Omit mutationID to generate one; supply a stable ID for idempotent retries.
 func (s *Store[K, V]) PutKeySet(
 	ctx context.Context,
 	key K,
 	value V,
 	keys StoreKeySet,
-	mutationID string,
+	mutationID ...string,
 ) (MutationResult, error) {
 	var named map[string]any
 	if keys != nil {
 		named = keys.ToMap()
 	}
-	return s.Put(ctx, key, value, named, mutationID)
+	return s.Put(ctx, key, value, named, mutationID...)
 }
 
 // PutWithKey inserts or replaces one row with a single default secondary-key string.
@@ -139,13 +140,13 @@ func (s *Store[K, V]) PutWithKey(
 	key K,
 	value V,
 	singleSecondaryKey string,
-	mutationID string,
+	mutationID ...string,
 ) (MutationResult, error) {
 	var named map[string]any
 	if singleSecondaryKey != "" {
 		named = map[string]any{s.store.resolveDefaultKeyName(): singleSecondaryKey}
 	}
-	return s.Put(ctx, key, value, named, mutationID)
+	return s.Put(ctx, key, value, named, mutationID...)
 }
 
 func (s *Store[K, V]) Put(
@@ -153,7 +154,7 @@ func (s *Store[K, V]) Put(
 	key K,
 	value V,
 	named map[string]any,
-	mutationID string,
+	mutationID ...string,
 ) (MutationResult, error) {
 	keyBytes, err := s.keyCodec.Encode(key)
 	if err != nil {
@@ -163,22 +164,21 @@ func (s *Store[K, V]) Put(
 	if err != nil {
 		return MutationResult{}, fmt.Errorf("encode payload: %w", err)
 	}
-	return s.store.Put(ctx, keyBytes, payload, named, mutationID)
+	return s.store.Put(ctx, keyBytes, payload, named, mutationID...)
 }
 
 // Get reads one row by primary key with freshness evidence; nil when
-// absent. strict bounded-waits for the replica's committed frontier.
+// absent. Pass Strict(d) to bounded-wait for the replica's committed frontier.
 func (s *Store[K, V]) Get(
 	ctx context.Context,
 	key K,
-	strict bool,
-	waitMs int,
+	opts ...ReadOption,
 ) (*Row[K, V], error) {
 	keyBytes, err := s.keyCodec.Encode(key)
 	if err != nil {
 		return nil, fmt.Errorf("encode key: %w", err)
 	}
-	row, err := s.store.Get(ctx, keyBytes, strict, waitMs)
+	row, err := s.store.Get(ctx, keyBytes, opts...)
 	if err != nil || row == nil {
 		return nil, err
 	}
@@ -190,17 +190,16 @@ func (s *Store[K, V]) Get(
 }
 
 // GetBy resolves a declared named-key value to every typed primary row
-// it points at plus freshness evidence.
+// it points at plus freshness evidence. Limit(n) caps the page;
+// Strict(d) bounded-waits for freshness.
 func (s *Store[K, V]) GetBy(
 	ctx context.Context,
 	namedKey string,
 	value any,
-	limit int,
-	strict bool,
-	waitMs int,
+	opts ...ReadOption,
 ) (RowsResult[K, V], error) {
 	result := RowsResult[K, V]{}
-	rows, err := s.store.GetBy(ctx, namedKey, value, limit, strict, waitMs)
+	rows, err := s.store.GetBy(ctx, namedKey, value, opts...)
 	if err != nil {
 		return result, err
 	}
@@ -219,10 +218,9 @@ func (s *Store[K, V]) GetBy(
 func (s *Store[K, V]) Find(
 	ctx context.Context,
 	key K,
-	strict bool,
-	waitMs int,
+	opts ...ReadOption,
 ) (V, bool, error) {
-	row, err := s.Get(ctx, key, strict, waitMs)
+	row, err := s.Get(ctx, key, opts...)
 	if err != nil || row == nil {
 		var zero V
 		return zero, false, err
@@ -237,10 +235,9 @@ func (s *Store[K, V]) FindBy(
 	ctx context.Context,
 	namedKey string,
 	value any,
-	strict bool,
-	waitMs int,
+	opts ...ReadOption,
 ) (V, bool, error) {
-	rows, err := s.GetBy(ctx, namedKey, value, 1, strict, waitMs)
+	rows, err := s.GetBy(ctx, namedKey, value, append(opts, Limit(1))...)
 	var zero V
 	if err != nil || len(rows.Rows) == 0 {
 		return zero, false, err
@@ -255,7 +252,7 @@ func (s *Store[K, V]) GetOrDefault(
 	key K,
 	fallback V,
 ) (V, error) {
-	value, found, err := s.Find(ctx, key, false, 0)
+	value, found, err := s.Find(ctx, key)
 	if err != nil || !found {
 		return fallback, err
 	}
@@ -266,31 +263,44 @@ func (s *Store[K, V]) GetOrDefault(
 func (s *Store[K, V]) Delete(
 	ctx context.Context,
 	key K,
-	mutationID string,
+	mutationID ...string,
 ) (MutationResult, error) {
 	keyBytes, err := s.keyCodec.Encode(key)
 	if err != nil {
 		return MutationResult{}, fmt.Errorf("encode key: %w", err)
 	}
-	return s.store.Delete(ctx, keyBytes, mutationID)
+	return s.store.Delete(ctx, keyBytes, mutationID...)
 }
 
 // Page returns one bounded typed iteration page in primary-key order;
-// pass the previous page's NextKey (or nil to start) to continue.
+// pass After(page.NextKey) to continue and Limit(n) to bound the page.
 func (s *Store[K, V]) Page(
 	ctx context.Context,
-	afterKey *K,
-	limit int,
+	opts ...ReadOption,
 ) (RowPage[K, V], error) {
+	cfg := resolveReads(opts)
 	var after []byte
-	if afterKey != nil {
-		encoded, err := s.keyCodec.Encode(*afterKey)
+	switch v := cfg.after.(type) {
+	case nil:
+	case K:
+		encoded, err := s.keyCodec.Encode(v)
 		if err != nil {
 			return RowPage[K, V]{}, fmt.Errorf("encode key: %w", err)
 		}
 		after = encoded
+	case *K:
+		if v == nil {
+			break
+		}
+		encoded, err := s.keyCodec.Encode(*v)
+		if err != nil {
+			return RowPage[K, V]{}, fmt.Errorf("encode key: %w", err)
+		}
+		after = encoded
+	default:
+		return RowPage[K, V]{}, fmt.Errorf("After key must be %T, got %T", *new(K), cfg.after)
 	}
-	page, err := s.store.Page(ctx, after, limit)
+	page, err := s.store.Page(ctx, After(after), Limit(cfg.limit))
 	if err != nil {
 		return RowPage[K, V]{}, err
 	}
@@ -309,15 +319,22 @@ func (s *Store[K, V]) Page(
 	return result, nil
 }
 
-// Iterate visits every row in primary-key order across bounded pages.
+// Iterate visits every row in primary-key order across bounded pages —
+// Limit(n) sets the page size and After(key) a start position.
 func (s *Store[K, V]) Iterate(
 	ctx context.Context,
-	limit int,
 	fn func(Row[K, V]) error,
+	opts ...ReadOption,
 ) error {
+	cfg := resolveReads(opts)
 	var after *K
+	if v, ok := cfg.after.(K); ok {
+		after = &v
+	} else if v, ok := cfg.after.(*K); ok {
+		after = v
+	}
 	for {
-		page, err := s.Page(ctx, after, limit)
+		page, err := s.Page(ctx, After(after), Limit(cfg.limit))
 		if err != nil {
 			return err
 		}
@@ -334,8 +351,8 @@ func (s *Store[K, V]) Iterate(
 }
 
 // Clear empties the store as one journaled mutation.
-func (s *Store[K, V]) Clear(ctx context.Context, mutationID string) (MutationResult, error) {
-	return s.store.Clear(ctx, mutationID)
+func (s *Store[K, V]) Clear(ctx context.Context, mutationID ...string) (MutationResult, error) {
+	return s.store.Clear(ctx, mutationID...)
 }
 
 // Drop tombstones the store.

@@ -151,14 +151,14 @@ func process(
 	req := msg.Value
 
 	// 1. primary-key lookup by email -- value only, no row unwrapping
-	profile, found, err := users.Find(ctx, req.UserEmail, false, 0)
+	profile, found, err := users.Find(ctx, req.UserEmail)
 	if err != nil {
 		return err
 	}
 
 	// 2. named-key fallback -- the declared "user_id" index on the store
 	if !found && req.UserID != "" {
-		profile, found, err = users.FindBy(ctx, "user_id", req.UserID, false, 0)
+		profile, found, err = users.FindBy(ctx, "user_id", req.UserID)
 		if err != nil {
 			return err
 		}

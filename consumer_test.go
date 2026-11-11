@@ -371,11 +371,11 @@ func TestStoreFindFindByGetOrDefault(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	if v, found, err := store.Find(ctx, "a@x.io", false, 0); err != nil ||
+	if v, found, err := store.Find(ctx, "a@x.io"); err != nil ||
 		!found || v != "alice" {
 		t.Fatalf("Find = %q,%v,%v", v, found, err)
 	}
-	if v, found, err := store.FindBy(ctx, "user_id", "u-1", false, 0); err != nil ||
+	if v, found, err := store.FindBy(ctx, "user_id", "u-1"); err != nil ||
 		!found || v != "alice" {
 		t.Fatalf("FindBy = %q,%v,%v", v, found, err)
 	}
@@ -385,10 +385,10 @@ func TestStoreFindFindByGetOrDefault(t *testing.T) {
 		`{"found": false, "applied_seq": 7, "committed_seq": 7}`
 	stub.routes["/v1/state-stores/get-by"] =
 		`{"rows": [], "applied_seq": 7, "committed_seq": 7}`
-	if _, found, err := store.Find(ctx, "ghost", false, 0); err != nil || found {
+	if _, found, err := store.Find(ctx, "ghost"); err != nil || found {
 		t.Fatalf("Find miss = %v,%v", found, err)
 	}
-	if _, found, err := store.FindBy(ctx, "user_id", "ghost", false, 0); err != nil || found {
+	if _, found, err := store.FindBy(ctx, "user_id", "ghost"); err != nil || found {
 		t.Fatalf("FindBy miss = %v,%v", found, err)
 	}
 	if v, err := store.GetOrDefault(ctx, "ghost", "fallback"); err != nil ||

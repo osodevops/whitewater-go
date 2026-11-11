@@ -262,22 +262,21 @@ _, err := accounts.DefineStateStore(ctx, spec, nil)        // nil source = manua
 profiles, _ := whitewater.StoreForDomain[Profile](accounts, "employees")
 // named-key postings: a fluent StoreKeySet struct, or a raw map —
 _, err = profiles.PutKeySet(ctx, "user-1", profile,
-    PassportKeySet{}.WithPassport("P111").WithDepartment("eng"), "")
+    PassportKeySet{}.WithPassport("P111").WithDepartment("eng"))
 _, err = profiles.Put(ctx, "user-1", profile,
-    map[string]any{"passport": "P111", "department": "eng"}, "")
+    map[string]any{"passport": "P111", "department": "eng"})
 
-row, _ := profiles.Get(ctx, "user-1", true, 500)        // row.Value is Profile
-rows, _ := profiles.GetBy(ctx, "department", "eng", 0, false, 0)
-_ = profiles.Iterate(ctx, 256,
-    func(r whitewater.Row[string, Profile]) error { export(r); return nil })
+row, _ := profiles.Get(ctx, "user-1", whitewater.Strict(500*time.Millisecond))        // row.Value is Profile
+rows, _ := profiles.GetBy(ctx, "department", "eng")
+_ = profiles.Iterate(ctx, func(r whitewater.Row[string, Profile]) error { export(r); return nil })
 
 // Rebind under different codecs without a wire call:
 raw := whitewater.RebindStore(profiles, whitewater.StringCodec(), whitewater.BytesCodec())
 ```
 
 ```go
-user, found, _ := profiles.Find(ctx, email, false, 0)
-user, found, _ = profiles.FindBy(ctx, "user_id", userID, false, 0)
+user, found, _ := profiles.Find(ctx, email)
+user, found, _ = profiles.FindBy(ctx, "user_id", userID)
 count, _ := counters.GetOrDefault(ctx, bucket, 0)
 ```
 
@@ -385,7 +384,7 @@ escape hatches for the same wire contract.
 | Temporary fetches | `Feed.Fetch(opts)` / `Domain.FeedOps().TemporaryFetch` — `after_event_time_ns` seeks, `new_only`, `tail` + `wait_ms` long-poll · `Feed.Load(start, sink)` · `Feed.Records` |
 | Consumers | `feed.Consumer(reader)` → `FeedConsumer`: `StartAt` `MaxPageSize` `Backoff` `OnError` `LastError` `Err` · `Messages` channel / `Run` / `Close` `Wait` `Done` |
 | Subscription members | `Domain.MemberClient(sub)` / `Domain.SubscriptionRef(name).MemberClient()`: `Join` `Claim` `Renew` `Release` `Fetch` `Ack` — shared progress + RF3 work leases · `Feed.Subscribe` `Domain.Subscribe` managed loops |
-| StateStores | `Domain.StateStore` `Domain.Store` / `StoreForDomain[V]` `StoreOfDomain[K,V]` `NewStateStore(relative)`: `AddUniqueKey` `AddNonUniqueKey` `AddKey` `NamedKeys` `Put` `Get` `GetBy` `Delete` `Page` `Iterate` `Clear` `Drop` · `Domain.DefineStateStore` `DropStateStore` — source Feeds may cross Domains |
+| StateStores | `Domain.StateStore` `Domain.Store` / `StoreForDomain[V]` `StoreOfDomain[K,V]` `NewStateStore(relative)`: `AddUniqueKey` `AddNonUniqueKey` `AddKey` `NamedKeys` `Put` `Get` `GetBy` `Find` `FindBy` `GetOrDefault` `Delete` `Page` `Iterate` `Clear` `Drop` · `Strict(d)`/`Limit(n)`/`After(k)` read options · `Domain.DefineStateStore` `DropStateStore` — source Feeds may cross Domains |
 | Indexes | `Domain.QueryIndex(relative, IndexPredicate)` → `IndexPage` · `IndexExact` `IndexPrefix` `IndexRange` + `InclusiveBound` `ExclusiveBound` |
 | Pipes | `Domain.DefineForwardPipe` `DefineEnrichPipe` `DefineWindowPipe` — every endpoint a `ScopedRef` (`Rel`/`Abs`/`*Feed`/`*Store`/`SubscriptionRef`); Pipe + input Subscription stay in-domain · `Domain.Pipe(relative)` → `Describe` `Pause` `Resume` `Drop` · `PipeInfos` · `ForwardOperation` `EnrichOperation` `WindowOperation` + `EnrichOptions` `WindowOptions` · `CountAggregation` `SumAggregation` `AverageAggregation` · durations are `time.Duration` |
 | Catalog lifecycle | `Create*` `Describe*` `Rename*` `Drop*` `List*` on `Domain` for Feed, Writer, Reader, Subscription · client-level `CreateDomain` `DescribeDomain` `RenameDomain` `DropDomain` `ListDomains` `CreateRole` `DescribeRole` `RenameRole` `DropRole` `ListRoles` `ListGrants` · `Domain.OpenWriterSession` `SeekReader` |

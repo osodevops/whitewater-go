@@ -6,7 +6,63 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
+
+// ReadOption tunes a store read, listing, or page — Strict bounds the
+// freshness wait, Limit caps returned rows, and After continues a Page
+// or Iterate past a key.
+type ReadOption func(*readConfig)
+
+type readConfig struct {
+	strict bool
+	waitMs int
+	limit  int
+	after  any
+}
+
+// Strict makes a read bounded-wait up to wait for the serving replica
+// to apply its committed frontier rather than answering stale.
+func Strict(wait time.Duration) ReadOption {
+	return func(c *readConfig) {
+		c.strict = true
+		c.waitMs = int(wait.Milliseconds())
+	}
+}
+
+// Limit caps the rows a GetBy or Page returns, and sets the page size
+// Iterate steps by.
+func Limit(n int) ReadOption {
+	return func(c *readConfig) { c.limit = n }
+}
+
+// After continues a Page or starts an Iterate after the given key —
+// pass a previous page's NextKey ([]byte on StateStore, K on
+// Store[K, V]) to continue.
+func After(key any) ReadOption {
+	return func(c *readConfig) { c.after = key }
+}
+
+func resolveReads(opts []ReadOption) readConfig {
+	var cfg readConfig
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	return cfg
+}
+
+func afterBytes(after any) ([]byte, error) {
+	switch v := after.(type) {
+	case nil:
+		return nil, nil
+	case []byte:
+		return v, nil
+	default:
+		return nil, fmt.Errorf("After key must be []byte, got %T", after)
+	}
+}
 
 // StateStore is a thin facade over one node-side StateStore — the
 // durable RF3 + Fjall store on the Nodes is the only store; this object
@@ -18,9 +74,9 @@ import (
 //	store, err := domain.DefineStateStore(ctx, spec)
 //
 //	_, _ = store.Put(ctx, []byte("user-1"), []byte("profile-1"),
-//	    map[string]any{"passport": "P111", "department": "eng"}, "")
-//	row, _ := store.Get(ctx, []byte("user-1"), false, 0)
-//	rows, _ := store.GetBy(ctx, "department", "eng", 0, false, 0)
+//	    map[string]any{"passport": "P111", "department": "eng"})
+//	row, _ := store.Get(ctx, []byte("user-1"))
+//	rows, _ := store.GetBy(ctx, "department", "eng")
 //
 // AddUniqueKey/AddNonUniqueKey record declaration intent used by
 // Define; they do not mutate an already-declared store (named keys are
@@ -229,17 +285,18 @@ func (s *StateStore) resolveDefaultKeyName() string {
 }
 
 // PutKeySet inserts or replaces one row using a typed StoreKeySet.
+// Omit mutationID to generate one; supply a stable ID for idempotent retries.
 func (s *StateStore) PutKeySet(
 	ctx context.Context,
 	key, payload []byte,
 	keys StoreKeySet,
-	mutationID string,
+	mutationID ...string,
 ) (MutationResult, error) {
 	var named map[string]any
 	if keys != nil {
 		named = keys.ToMap()
 	}
-	return s.Put(ctx, key, payload, named, mutationID)
+	return s.Put(ctx, key, payload, named, mutationID...)
 }
 
 // PutWithKey inserts or replaces one row with a single default secondary-key string.
@@ -247,20 +304,20 @@ func (s *StateStore) PutWithKey(
 	ctx context.Context,
 	key, payload []byte,
 	singleSecondaryKey string,
-	mutationID string,
+	mutationID ...string,
 ) (MutationResult, error) {
 	var named map[string]any
 	if singleSecondaryKey != "" {
 		named = map[string]any{s.resolveDefaultKeyName(): singleSecondaryKey}
 	}
-	return s.Put(ctx, key, payload, named, mutationID)
+	return s.Put(ctx, key, payload, named, mutationID...)
 }
 
 func (s *StateStore) Put(
 	ctx context.Context,
 	key, payload []byte,
 	named map[string]any,
-	mutationID string,
+	mutationID ...string,
 ) (MutationResult, error) {
 	t, err := s.bound()
 	if err != nil {
@@ -290,25 +347,25 @@ func (s *StateStore) Put(
 }
 
 // Get reads one row by primary key with freshness evidence on the
-// returned row; nil when absent. strict bounded-waits for the serving
-// replica to apply its committed frontier rather than answering stale.
+// returned row; nil when absent. Pass Strict(d) to bounded-wait for the
+// serving replica to apply its committed frontier rather than answering stale.
 func (s *StateStore) Get(
 	ctx context.Context,
 	key []byte,
-	strict bool,
-	waitMs int,
+	opts ...ReadOption,
 ) (*StoreRow, error) {
 	t, err := s.bound()
 	if err != nil {
 		return nil, err
 	}
+	cfg := resolveReads(opts)
 	body := map[string]any{
 		"store":      s.name,
 		"key_base64": base64.StdEncoding.EncodeToString(key),
-		"strict":     strict,
+		"strict":     cfg.strict,
 	}
-	if waitMs > 0 {
-		body["wait_ms"] = waitMs
+	if cfg.waitMs > 0 {
+		body["wait_ms"] = cfg.waitMs
 	}
 	raw, err := t.post(ctx, "/v1/state-stores/lookup", body)
 	if err != nil {
@@ -340,19 +397,19 @@ func (s *StateStore) Get(
 
 // GetBy resolves a declared named-key value to every primary row it
 // points at — the group/list lookup — plus the serving replica's
-// freshness evidence.
+// freshness evidence. Limit(n) caps the page; Strict(d) bounded-waits
+// for freshness.
 func (s *StateStore) GetBy(
 	ctx context.Context,
 	namedKey string,
 	value any,
-	limit int,
-	strict bool,
-	waitMs int,
+	opts ...ReadOption,
 ) (StoreRows, error) {
 	t, err := s.bound()
 	if err != nil {
 		return StoreRows{}, err
 	}
+	cfg := resolveReads(opts)
 	values, err := encodeIndexValues(value)
 	if err != nil {
 		return StoreRows{}, err
@@ -361,13 +418,13 @@ func (s *StateStore) GetBy(
 		"store":     s.name,
 		"named_key": namedKey,
 		"values":    values,
-		"strict":    strict,
+		"strict":    cfg.strict,
 	}
-	if limit > 0 {
-		body["limit"] = limit
+	if cfg.limit > 0 {
+		body["limit"] = cfg.limit
 	}
-	if waitMs > 0 {
-		body["wait_ms"] = waitMs
+	if cfg.waitMs > 0 {
+		body["wait_ms"] = cfg.waitMs
 	}
 	raw, err := t.post(ctx, "/v1/state-stores/get-by", body)
 	if err != nil {
@@ -389,7 +446,7 @@ func (s *StateStore) GetBy(
 func (s *StateStore) Delete(
 	ctx context.Context,
 	key []byte,
-	mutationID string,
+	mutationID ...string,
 ) (MutationResult, error) {
 	t, err := s.bound()
 	if err != nil {
@@ -410,13 +467,18 @@ func (s *StateStore) Delete(
 }
 
 // Page returns one bounded iteration page in primary-key order — the
-// same row set replica transfer serves, pinned to PinnedSeq.
+// same row set replica transfer serves, pinned to PinnedSeq. Pass
+// After(page.NextKey) to continue and Limit(n) to bound the page.
 func (s *StateStore) Page(
 	ctx context.Context,
-	afterKey []byte,
-	limit int,
+	opts ...ReadOption,
 ) (StorePage, error) {
 	t, err := s.bound()
+	if err != nil {
+		return StorePage{}, err
+	}
+	cfg := resolveReads(opts)
+	afterKey, err := afterBytes(cfg.after)
 	if err != nil {
 		return StorePage{}, err
 	}
@@ -424,8 +486,8 @@ func (s *StateStore) Page(
 	if len(afterKey) > 0 {
 		body["after_key_base64"] = base64.StdEncoding.EncodeToString(afterKey)
 	}
-	if limit > 0 {
-		body["limit"] = limit
+	if cfg.limit > 0 {
+		body["limit"] = cfg.limit
 	}
 	raw, err := t.post(ctx, "/v1/state-stores/iterate", body)
 	if err != nil {
@@ -448,15 +510,20 @@ func (s *StateStore) Page(
 	return page, nil
 }
 
-// Iterate visits every row in primary-key order across bounded pages.
+// Iterate visits every row in primary-key order across bounded pages —
+// Limit(n) sets the page size and After(key) a start position.
 func (s *StateStore) Iterate(
 	ctx context.Context,
-	limit int,
 	fn func(StoreRow) error,
+	opts ...ReadOption,
 ) error {
-	var after []byte
+	cfg := resolveReads(opts)
+	after, err := afterBytes(cfg.after)
+	if err != nil {
+		return err
+	}
 	for {
-		page, err := s.Page(ctx, after, limit)
+		page, err := s.Page(ctx, After(after), Limit(cfg.limit))
 		if err != nil {
 			return err
 		}
@@ -476,7 +543,7 @@ func (s *StateStore) Iterate(
 // idempotent under mutationID retries.
 func (s *StateStore) Clear(
 	ctx context.Context,
-	mutationID string,
+	mutationID ...string,
 ) (MutationResult, error) {
 	t, err := s.bound()
 	if err != nil {
@@ -591,9 +658,9 @@ func (c *StateStoresClient) Drop(
 	return store.Drop(ctx)
 }
 
-func mutationOrNew(mutationID string) string {
-	if mutationID == "" {
-		return newUUID()
+func mutationOrNew(mutationIDs []string) string {
+	if len(mutationIDs) > 0 && mutationIDs[0] != "" {
+		return mutationIDs[0]
 	}
-	return mutationID
+	return newUUID()
 }

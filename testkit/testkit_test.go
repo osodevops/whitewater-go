@@ -254,7 +254,7 @@ func TestStoreRoundTrip(t *testing.T) {
 		t.Fatal("first put deduplicated")
 	}
 	if _, err := store.Put(ctx, []byte("emp-2"), []byte("bob"),
-		map[string]any{"department": "eng"}, ""); err != nil {
+		map[string]any{"department": "eng"}); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	retry, err := store.Put(ctx, []byte("emp-1"), []byte("alice"),
@@ -266,19 +266,19 @@ func TestStoreRoundTrip(t *testing.T) {
 		t.Fatalf("retry = %+v, want deduplicated replay of %+v", retry, put)
 	}
 
-	row, err := store.Get(ctx, []byte("emp-1"), false, 0)
+	row, err := store.Get(ctx, []byte("emp-1"))
 	if err != nil || row == nil || string(row.Payload) != "alice" {
 		t.Fatalf("Get = %+v err=%v", row, err)
 	}
-	byDept, err := store.GetBy(ctx, "department", "eng", 0, false, 0)
+	byDept, err := store.GetBy(ctx, "department", "eng")
 	if err != nil || len(byDept.Rows) != 2 {
 		t.Fatalf("GetBy = %+v err=%v", byDept, err)
 	}
 	var keys []string
-	if err := store.Iterate(ctx, 100, func(row whitewater.StoreRow) error {
+	if err := store.Iterate(ctx, func(row whitewater.StoreRow) error {
 		keys = append(keys, string(row.Key))
 		return nil
-	}); err != nil {
+	}, whitewater.Limit(100)); err != nil {
 		t.Fatalf("Iterate: %v", err)
 	}
 	if len(keys) != 2 || keys[0] != "emp-1" || keys[1] != "emp-2" {
@@ -288,19 +288,19 @@ func TestStoreRoundTrip(t *testing.T) {
 	if _, err := store.Delete(ctx, []byte("emp-2"), ""); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if row, err := store.Get(ctx, []byte("emp-2"), false, 0); err != nil || row != nil {
+	if row, err := store.Get(ctx, []byte("emp-2")); err != nil || row != nil {
 		t.Fatalf("Get after delete = %+v err=%v", row, err)
 	}
 	if _, err := store.Clear(ctx, "clear-1"); err != nil {
 		t.Fatalf("Clear: %v", err)
 	}
-	if err := store.Iterate(ctx, 100, func(whitewater.StoreRow) error {
+	if err := store.Iterate(ctx, func(whitewater.StoreRow) error {
 		t.Fatal("row survived clear")
 		return nil
-	}); err != nil {
+	}, whitewater.Limit(100)); err != nil {
 		t.Fatalf("Iterate after clear: %v", err)
 	}
-	if row, err := store.Get(ctx, []byte("emp-1"), false, 0); err != nil || row != nil {
+	if row, err := store.Get(ctx, []byte("emp-1")); err != nil || row != nil {
 		t.Fatalf("Get after clear = %+v err=%v", row, err)
 	}
 }
